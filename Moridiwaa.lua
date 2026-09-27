@@ -1,16 +1,25 @@
 --[[
-    Moridiwaa - Player Control Panel
-    Loadstring Compatible Version
+    Moridiwaa - Player Control Panel (Client-Side Standalone Version)
+    Features:
+    - ESP / Fly / Speed / Noclip
+    - Client-Side Rejoin / Server Hop / Low Ping Hop (No server script required)
+    - Dynamic UI Color & Custom Theme Customization (RGB)
 ]]
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService = game:GetService("TeleportService")
+local HttpService = game:GetService("HttpService")
 
 local LP = Players.LocalPlayer
 local MAX_PLAYERS = 50
 local STUDS_TO_METERS = 1
+
+-- Theme / Accent Color System
+local AccentColor = Color3.fromRGB(80, 140, 240) -- Default Cyan/Blue Accent
+local ThemeElements = {}
 
 local ESPEnabled = true
 local ShowNames = true
@@ -32,11 +41,32 @@ local FlyConnection
 local NoclipConnection
 local MovementConnection
 
-local TeleportRemote = ReplicatedStorage:FindFirstChild("MoridiwaaTeleport")
-local ServerStatus = ReplicatedStorage:FindFirstChild("MoridiwaaServerStatus")
+-- Theme Functions
+local function RegisterThemeElement(instance, property, colorType)
+    table.insert(ThemeElements, {Instance = instance, Property = property, Type = colorType or "Accent"})
+    if colorType == "Accent" then
+        instance[property] = AccentColor
+    end
+end
+
+local function UpdateTheme(newColor)
+    AccentColor = newColor
+    for _, elem in ipairs(ThemeElements) do
+        if elem.Instance and elem.Instance.Parent then
+            if elem.Type == "Accent" then
+                elem.Instance[elem.Property] = AccentColor
+            end
+        end
+    end
+    for p, e in pairs(ESP) do
+        if e.Highlight then
+            e.Highlight.FillColor = AccentColor
+        end
+    end
+end
 
 -- ============================================================
--- GUI
+-- GUI BASE
 -- ============================================================
 
 local Gui = Instance.new("ScreenGui")
@@ -63,6 +93,13 @@ Top.Size = UDim2.new(1, 0, 0, 55)
 Top.BackgroundColor3 = Color3.fromRGB(20, 21, 24)
 Top.BorderSizePixel = 0
 Top.Parent = Main
+
+local TopAccentBar = Instance.new("Frame")
+TopAccentBar.Size = UDim2.new(1, 0, 0, 3)
+TopAccentBar.Position = UDim2.new(0, 0, 1, -3)
+TopAccentBar.BorderSizePixel = 0
+TopAccentBar.Parent = Top
+RegisterThemeElement(TopAccentBar, "BackgroundColor3", "Accent")
 
 local Title = Instance.new("TextLabel")
 Title.Position = UDim2.fromOffset(20, 8)
@@ -206,7 +243,7 @@ local function Toggle(parent, text, y, default, callback)
     b.Position = UDim2.new(1,-70,0,y+4)
     b.Size = UDim2.fromOffset(48,26)
     b.Text = ""
-    b.BackgroundColor3 = default and Color3.fromRGB(80,80,84) or Color3.fromRGB(48,49,53)
+    b.BackgroundColor3 = default and AccentColor or Color3.fromRGB(48,49,53)
     b.AutoButtonColor = false
     b.Parent = parent
 
@@ -229,7 +266,7 @@ local function Toggle(parent, text, y, default, callback)
     b.MouseButton1Click:Connect(function()
         state = not state
         dot.Position = state and UDim2.new(1,-24,.5,-10) or UDim2.fromOffset(4,3)
-        b.BackgroundColor3 = state and Color3.fromRGB(80,80,84) or Color3.fromRGB(48,49,53)
+        b.BackgroundColor3 = state and AccentColor or Color3.fromRGB(48,49,53)
         callback(state)
     end)
 
@@ -284,24 +321,101 @@ local function SetStatus(text)
     end
 end
 
-local function RequestServerAction(action)
-    if not TeleportRemote then
-        TeleportRemote = ReplicatedStorage:FindFirstChild("MoridiwaaTeleport")
-    end
+-- ============================================================
+-- CLIENT-SIDE SERVER FUNCTIONS (REJOIN / HOP / LOW PING)
+-- ============================================================
 
-    if not TeleportRemote then
-        SetStatus("Server script not installed")
+local function RejoinServer()
+    SetStatus("Rejoining current server...")
+    if #Players:GetPlayers() <= 1 then
+        LP:Kick("\nRejoining server...")
+        task.wait(.5)
+        TeleportService:Teleport(game.PlaceId, LP)
+    else
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP)
+    end
+end
+
+local function ServerHop()
+    SetStatus("Searching for another server...")
+    local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/0?sortOrder=Desc&limit=100"
+    
+    local ok, response = pcall(function()
+        return game:HttpGet(url)
+    end)
+    
+    if not ok or not response then
+        SetStatus("Failed to fetch server list!")
         return
     end
 
-    SetStatus("Requesting: " .. action .. " ...")
-
-    local ok, err = pcall(function()
-        TeleportRemote:FireServer(action)
+    local data
+    local parseOk = pcall(function()
+        data = HttpService:JSONDecode(response)
     end)
 
-    if not ok then
-        SetStatus("Request failed: " .. tostring(err))
+    if not parseOk or not data or not data.data then
+        SetStatus("Error reading server response!")
+        return
+    end
+
+    local validServers = {}
+    for _, server in ipairs(data.data) do
+        if type(server) == "table" and server.id ~= game.JobId and server.playing < server.maxPlayers then
+            table.insert(validServers, server)
+        end
+    end
+
+    if #validServers > 0 then
+        local target = validServers[math.random(1, #validServers)]
+        SetStatus("Teleporting to server: " .. string.sub(target.id, 1, 8) .. "...")
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, target.id, LP)
+    else
+        SetStatus("No alternative servers found!")
+    end
+end
+
+local function HopLowPing()
+    SetStatus("Finding lowest ping server...")
+    local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/0?sortOrder=Asc&limit=100"
+    
+    local ok, response = pcall(function()
+        return game:HttpGet(url)
+    end)
+
+    if not ok or not response then
+        SetStatus("Failed to fetch server list!")
+        return
+    end
+
+    local data
+    local parseOk = pcall(function()
+        data = HttpService:JSONDecode(response)
+    end)
+
+    if not parseOk or not data or not data.data then
+        SetStatus("Error reading server response!")
+        return
+    end
+
+    local bestServer = nil
+    local lowestPing = math.huge
+
+    for _, server in ipairs(data.data) do
+        if type(server) == "table" and server.id ~= game.JobId and server.playing < server.maxPlayers then
+            local ping = server.ping or server.playing -- Fallback to lowest player density if ping hidden
+            if ping < lowestPing then
+                lowestPing = ping
+                bestServer = server
+            end
+        end
+    end
+
+    if bestServer then
+        SetStatus("Teleporting to optimal server: " .. string.sub(bestServer.id, 1, 8) .. "...")
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, bestServer.id, LP)
+    else
+        SetStatus("No low ping server found!")
     end
 end
 
@@ -470,10 +584,10 @@ end)
 MainPage.CanvasSize = UDim2.fromOffset(0,560)
 
 -- ============================================================
--- Visuals
+-- Visuals & Theme Color Customization
 -- ============================================================
 
-local VisualCard = Card(VisualPage,20,20,570,220,"Visual Settings")
+local VisualCard = Card(VisualPage,20,20,570,160,"Visual Settings")
 
 Toggle(VisualCard,"Highlight Players",55,true,function(v)
     HighlightEnabled = v
@@ -488,6 +602,69 @@ Toggle(VisualCard,"Always On Top",100,true,function(v)
         e.Billboard.AlwaysOnTop = v
     end
 end)
+
+-- UI Theme Customization Card
+local ThemeCard = Card(VisualPage,20,200,570,280,"UI Color Theme Settings")
+
+local PresetLabel = Instance.new("TextLabel")
+PresetLabel.Position = UDim2.fromOffset(18,50)
+PresetLabel.Size = UDim2.fromOffset(200,20)
+PresetLabel.BackgroundTransparency = 1
+PresetLabel.Text = "Theme Presets:"
+PresetLabel.TextColor3 = Color3.fromRGB(150,150,155)
+PresetLabel.Font = Enum.Font.Gotham
+PresetLabel.TextSize = 13
+PresetLabel.TextXAlignment = Enum.TextXAlignment.Left
+PresetLabel.Parent = ThemeCard
+
+local Presets = {
+    {Name = "Cyan", Color = Color3.fromRGB(80, 140, 240)},
+    {Name = "Red", Color = Color3.fromRGB(240, 70, 70)},
+    {Name = "Purple", Color = Color3.fromRGB(160, 80, 240)},
+    {Name = "Green", Color = Color3.fromRGB(70, 210, 120)},
+    {Name = "Gold", Color = Color3.fromRGB(240, 180, 60)},
+    {Name = "Pink", Color = Color3.fromRGB(240, 100, 180)}
+}
+
+for i, p in ipairs(Presets) do
+    local btn = Instance.new("TextButton")
+    btn.Position = UDim2.fromOffset(18 + ((i-1)%3)*180, 80 + math.floor((i-1)/3)*40)
+    btn.Size = UDim2.fromOffset(170, 32)
+    btn.BackgroundColor3 = p.Color
+    btn.Text = p.Name
+    btn.TextColor3 = Color3.fromRGB(255,255,255)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 12
+    btn.Parent = ThemeCard
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0,6)
+    corner.Parent = btn
+
+    btn.MouseButton1Click:Connect(function()
+        UpdateTheme(p.Color)
+    end)
+end
+
+-- Custom RGB Controls
+local curR, curG, curB = 80, 140, 240
+
+NumberBox(ThemeCard, "Custom Red (R)", 170, curR, 0, 255, function(v)
+    curR = v
+    UpdateTheme(Color3.fromRGB(curR, curG, curB))
+end)
+
+NumberBox(ThemeCard, "Custom Green (G)", 205, curG, 0, 255, function(v)
+    curG = v
+    UpdateTheme(Color3.fromRGB(curR, curG, curB))
+end)
+
+NumberBox(ThemeCard, "Custom Blue (B)", 240, curB, 0, 255, function(v)
+    curB = v
+    UpdateTheme(Color3.fromRGB(curR, curG, curB))
+end)
+
+VisualPage.CanvasSize = UDim2.fromOffset(0,500)
 
 -- ============================================================
 -- Players
@@ -535,7 +712,7 @@ local function CreateESP(p)
 
     local h = Instance.new("Highlight")
     h.Name = "PlayerESP"
-    h.FillColor = Color3.fromRGB(220,70,70)
+    h.FillColor = AccentColor
     h.OutlineColor = Color3.fromRGB(240,240,240)
     h.FillTransparency = .55
     h.Parent = p.Character
@@ -620,7 +797,7 @@ local function RefreshPlayers()
 end
 
 -- ============================================================
--- Others
+-- Others Page
 -- ============================================================
 
 local OtherCard = Card(OtherPage,20,20,570,320,"Server Functions")
@@ -660,15 +837,15 @@ ServerStatusLabel.TextWrapped = true
 ServerStatusLabel.Parent = OtherCard
 
 Rejoin.MouseButton1Click:Connect(function()
-    RequestServerAction("rejoin")
+    RejoinServer()
 end)
 
 Hop.MouseButton1Click:Connect(function()
-    RequestServerAction("hop")
+    ServerHop()
 end)
 
 LowPing.MouseButton1Click:Connect(function()
-    RequestServerAction("lowping")
+    HopLowPing()
 end)
 
 OtherPage.CanvasSize = UDim2.fromOffset(0,360)
@@ -707,7 +884,7 @@ VisualTab.MouseButton1Click:Connect(function() OpenPage(VisualPage) end)
 OthersTab.MouseButton1Click:Connect(function() OpenPage(OtherPage) end)
 
 -- ============================================================
--- Left Ctrl
+-- Left Ctrl Toggle
 -- ============================================================
 
 UIS.InputBegan:Connect(function(input, processed)
@@ -721,7 +898,7 @@ UIS.InputBegan:Connect(function(input, processed)
 end)
 
 -- ============================================================
--- Movement maintenance
+-- Loops & Events
 -- ============================================================
 
 MovementConnection = RunService.Heartbeat:Connect(function()
@@ -746,10 +923,6 @@ MovementConnection = RunService.Heartbeat:Connect(function()
         end
     end
 end)
-
--- ============================================================
--- ESP distance update
--- ============================================================
 
 RunService.RenderStepped:Connect(function()
     if not ESPEnabled then
@@ -790,10 +963,6 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
--- ============================================================
--- Player events
--- ============================================================
-
 local function HookPlayer(p)
     if p == LP then
         return
@@ -824,10 +993,6 @@ Players.PlayerRemoving:Connect(function(p)
     Selected[p] = nil
     RefreshPlayers()
 end)
-
--- ============================================================
--- Respawn
--- ============================================================
 
 LP.CharacterAdded:Connect(function(character)
     local humanoid = character:WaitForChild("Humanoid", 5)
@@ -873,13 +1038,6 @@ LP.CharacterAdded:Connect(function(character)
     end
 end)
 
--- Server status events
-if ServerStatus then
-    ServerStatus.OnClientEvent:Connect(function(message)
-        SetStatus(tostring(message))
-    end)
-end
-
--- Start
+-- Start GUI
 OpenPage(MainPage)
 RefreshPlayers()
