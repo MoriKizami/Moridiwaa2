@@ -1,524 +1,544 @@
 --[[
-    Moridiwaa - Steal an Egg (Full Utility Script)
-    UI Library: Maclib UI
+    Moridiwaa - Steal an Egg (Anti-Detection Bypass Edition)
     Features:
-    - 5 Full-UI Color Themes (Background, Accent, Text)
-    - Auto Steal (Fast Go / Safe Return so egg doesn't drop)
-    - Auto Treadmill & Auto Upgrade Treadmill
-    - Auto Buy & Equip Trail
-    - Detailed Pet ESP (Tier, Weight, Price, Mutation, Rarity, Icon)
-    - Detailed Egg ESP for Base & Others
-    - Auto Event All Features
-    - Discord Webhook Logger
-    - Movement Controls (Speed up to 1000, Fly)
-    - Full Config Save & Load System
+    - Advanced Anti-Kick & Metatable Spoofing (__namecall / __index)
+    - Anti-Cheat Remote Blocking & Anti-AFK
+    - Custom Maclib UI with Full Theme Customization
+    - Smart Auto Steal (Zone/Tier/Pet Selection + Anti-Egg Reset Return Speed)
+    - Auto Treadmill, Upgrade, Buy/Equip Trails, Auto Event
+    - Advanced Pet ESP & Base/Egg ESP (Weight, Price, Rarity, Mutation)
+    - Safe WalkSpeed / Fly Control
+    - Config Saver / Loader & Discord Webhook Integration
 ]]
+
+-- ============================================================
+-- ANTI-DETECTION & BYPASS CORE (MUST RUN FIRST)
+-- ============================================================
+
+local setreadonly = setreadonly or make_writeable or function(...) end
+local checkcaller = checkcaller or function() return false end
+local gethui = gethui or function() return game:GetService("CoreGui") end
+
+-- Anti-Kick & Remote Interceptor
+local rawmeta = getrawmetatable(game)
+local oldNamecall = rawmeta.__namecall
+local oldIndex = rawmeta.__index
+
+setreadonly(rawmeta, false)
+
+rawmeta.__namecall = newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    local args = {...}
+
+    -- Block Game Kicks
+    if method == "Kick" or method == "kick" then
+        return nil
+    end
+
+    -- Block Detection Remotes
+    if method == "FireServer" or method == "InvokeServer" then
+        if self and typeof(self) == "Instance" then
+            local remoteName = string.lower(self.Name)
+            if remoteName:find("ban") or remoteName:find("cheat") or remoteName:find("detect") or remoteName:find("anticheat") or remoteName:find("checkspeed") then
+                return nil
+            end
+        end
+    end
+
+    return oldNamecall(self, ...)
+end)
+
+-- WalkSpeed Property Spoofing (Game always reads 16)
+rawmeta.__index = newcclosure(function(self, idx)
+    if not checkcaller() and self and typeof(self) == "Instance" and self:IsA("Humanoid") and idx == "WalkSpeed" then
+        return 16
+    end
+    return oldIndex(self, idx)
+end)
+
+setreadonly(rawmeta, true)
+
+-- Anti-AFK Setup
+local VirtualUser = game:GetService("VirtualUser")
+game:GetService("Players").LocalPlayer.Idled:Connect(function()
+    VirtualUser:CaptureController()
+    VirtualUser:ClickButton2(Vector2.new(0,0))
+end)
+
+-- ============================================================
+-- MAIN SCRIPT SETUP
+-- ============================================================
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
-local TeleportService = game:GetService("TeleportService")
-local VirtualUser = game:GetService("VirtualUser")
+local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
+
 local LP = Players.LocalPlayer
 
--- Executor HTTP Request Resolver
-local httpRequest = (syn and syn.request) or (http and http.request) or http_request or request
+-- Config Folder
+local ConfigFolder = "Moridiwaa_Configs"
+if not isfolder(ConfigFolder) then
+    makefolder(ConfigFolder)
+end
 
--- Global Settings / Flags
-_G.MoridiwaaConfig = {
-    -- Steal Settings
-    AutoSteal = false,
-    SelectedZone = "Zone 1",
-    SelectedTier = "Common",
-    SelectedEgg = "All",
-    GoSpeed = 250,
-    ReturnSpeed = 24, -- Safe speed to prevent egg reset
-    
-    -- Treadmill & Trails
-    AutoTreadmill = false,
-    AutoUpgradeTreadmill = false,
-    AutoBuyTrail = false,
-    SelectedBuyTrail = "Speed Trail 1",
-    AutoEquipTrail = false,
-    SelectedEquipTrail = "Speed Trail 1",
-    
-    -- Visuals / ESP
-    PetESP = false,
-    PetFilterTier = "All",
-    PetFilterTarget = "All",
-    EggESP = false,
-    EggFilterTier = "All",
-    EggFilterTarget = "All",
-    
-    -- Events & Webhook
-    AutoEvent = false,
-    WebhookEnabled = false,
-    WebhookURL = "",
-    
-    -- Movement
-    SpeedEnabled = false,
-    WalkSpeed = 100,
-    FlyEnabled = false,
-    FlySpeed = 50,
-    
-    -- Theme
-    CurrentTheme = "Cyber Cyan"
-}
-
--- Load Maclib UI Library
-local Maclib = loadstring(game:HttpGet("https://raw.githubusercontent.com/blood-line/Maclib/main/source.lua"))()
+-- Load Maclib UI
+local Maclib = loadstring(game:HttpGet("https://raw.githubusercontent.com/x2Swiftz/UI-Library/main/Maclib/Source.lua"))()
 
 local Window = Maclib:Window({
-    Title = "Moridiwaa",
-    Subtitle = "Steal an Egg - Ultimate Panel",
-    Size = UDim2.fromOffset(860, 550),
-    DragStyle = 1,
-    DisabledWindowControls = {},
-    ShowThemeTrigger = true,
-    CustomToggleKey = Enum.KeyCode.RightControl,
+    Title = "moridiwaa",
+    Subtitle = "Steal an Egg | Undetected Hub",
+    Size = UDim2.fromOffset(830, 520),
+    Dragable = true
 })
 
--- ============================================================
--- THEME SYSTEM (FULL COLOR OVERRIDE - 5 PRESETS)
--- ============================================================
+-- State Variables
+local Configs = {}
+local CurrentConfigName = "Default"
 
-local ThemePresets = {
-    ["Cyber Cyan"] = {
-        Primary = Color3.fromRGB(15, 18, 24),
-        Secondary = Color3.fromRGB(22, 26, 35),
-        Accent = Color3.fromRGB(0, 200, 255),
-        Text = Color3.fromRGB(240, 240, 245)
-    },
-    ["Crimson Red"] = {
-        Primary = Color3.fromRGB(22, 14, 14),
-        Secondary = Color3.fromRGB(32, 20, 20),
-        Accent = Color3.fromRGB(255, 60, 60),
-        Text = Color3.fromRGB(250, 230, 230)
-    },
-    ["Neon Violet"] = {
-        Primary = Color3.fromRGB(18, 14, 25),
-        Secondary = Color3.fromRGB(28, 20, 38),
-        Accent = Color3.fromRGB(170, 70, 255),
-        Text = Color3.fromRGB(245, 235, 255)
-    },
-    ["Emerald Green"] = {
-        Primary = Color3.fromRGB(12, 22, 16),
-        Secondary = Color3.fromRGB(18, 32, 24),
-        Accent = Color3.fromRGB(50, 225, 120),
-        Text = Color3.fromRGB(230, 250, 235)
-    },
-    ["Gold Amber"] = {
-        Primary = Color3.fromRGB(24, 20, 12),
-        Secondary = Color3.fromRGB(35, 28, 16),
-        Accent = Color3.fromRGB(255, 185, 40),
-        Text = Color3.fromRGB(255, 245, 225)
-    }
+local AutoSteal = false
+local SelectedZone = "Zone 1"
+local SelectedRarity = "All"
+local TargetPetName = ""
+local StealSpeed = 60 -- Defaulted to a safer speed
+local ReturnSpeed = 18 -- Safe speed so egg doesn't drop/reset
+local IsCarryingEgg = false
+
+local AutoTreadmill = false
+local AutoUpgradeTreadmill = false
+local SelectedTrailToBuy = "Basic Trail"
+local AutoBuyTrail = false
+local SelectedTrailToEquip = "Basic Trail"
+local AutoEquipTrail = false
+local AutoEvent = false
+
+local PetESPEnabled = false
+local PetESPFilterRarity = "All"
+local PetESPTargetName = ""
+local ShowPetWeight = true
+local ShowPetPrice = true
+local ShowPetMutation = true
+local ShowPetRarity = true
+
+local EggESPEnabled = false
+local EggESPFilterRarity = "All"
+local EggESPTargetName = ""
+local ShowEggWeight = true
+local ShowEggPrice = true
+local ShowEggMutation = true
+local ShowEggRarity = true
+
+local SpeedEnabled = false
+local CustomSpeed = 16
+local FlyEnabled = false
+local FlySpeed = 50
+
+local WebhookEnabled = false
+local WebhookURL = ""
+
+-- Theme Colors Manager
+local CurrentTheme = {
+    Primary = Color3.fromRGB(25, 25, 35),
+    Accent = Color3.fromRGB(130, 85, 245),
+    Background = Color3.fromRGB(15, 15, 20)
 }
 
-local function ApplyFullTheme(themeName)
-    local theme = ThemePresets[themeName]
-    if not theme then return end
-    _G.MoridiwaaConfig.CurrentTheme = themeName
-    
-    if Window.SetTheme then
-        Window:SetTheme({
-            MainColor = theme.Primary,
-            AccentColor = theme.Accent,
-            BackgroundColor = theme.Secondary,
-            FontColor = theme.Text
-        })
-    end
-end
+local ThemePresets = {
+    ["Mac Dark"] = {Accent = Color3.fromRGB(80, 140, 240), Primary = Color3.fromRGB(25, 25, 30)},
+    ["Cyber Red"] = {Accent = Color3.fromRGB(240, 60, 60), Primary = Color3.fromRGB(30, 20, 20)},
+    ["Neon Violet"] = {Accent = Color3.fromRGB(160, 60, 240), Primary = Color3.fromRGB(25, 18, 32)},
+    ["Emerald Green"] = {Accent = Color3.fromRGB(50, 205, 110), Primary = Color3.fromRGB(18, 28, 22)},
+    ["Gold Amber"] = {Accent = Color3.fromRGB(240, 180, 50), Primary = Color3.fromRGB(30, 26, 18)}
+}
 
 -- ============================================================
 -- TABS & SECTIONS
 -- ============================================================
 
-local StealTab = Window:Tab({ Name = "Steal Egg", Icon = "rbxassetid://10723415903" })
-local FarmTab = Window:Tab({ Name = "Farm & Upgrades", Icon = "rbxassetid://10709782845" })
-local VisualTab = Window:Tab({ Name = "ESP Visuals", Icon = "rbxassetid://10723415205" })
-local EventTab = Window:Tab({ Name = "Events & Webhook", Icon = "rbxassetid://10709782230" })
-local PlayerTab = Window:Tab({ Name = "Player", Icon = "rbxassetid://10747373122" })
-local ConfigTab = Window:Tab({ Name = "Config & Themes", Icon = "rbxassetid://10734950309" })
+local TabSteal = Window:Tab({Name = "Auto Steal", Icon = "rbxassetid://10723415903"})
+local TabFarm = Window:Tab({Name = "Farming & Trails", Icon = "rbxassetid://10723345840"})
+local TabESP = Window:Tab({Name = "Visuals & ESP", Icon = "rbxassetid://10723346959"})
+local TabPlayer = Window:Tab({Name = "Player & Webhook", Icon = "rbxassetid://10723405360"})
+local TabSettings = Window:Tab({Name = "Settings & Config", Icon = "rbxassetid://10734975486"})
 
--- ------------------------------------------------------------
 -- 1. AUTO STEAL TAB
--- ------------------------------------------------------------
-local StealSec = StealTab:Section({ Side = "Left", Name = "Auto Steal Controls" })
+local SecStealConfig = TabSteal:Section({Name = "Steal Filters & Location"})
 
-StealSec:Toggle({
-    Name = "Enable Auto Steal",
-    Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.AutoSteal = v end
-})
-
-StealSec:Dropdown({
+SecStealConfig:Dropdown({
     Name = "Select Zone",
     Options = {"Zone 1", "Zone 2", "Zone 3", "Zone 4", "VIP Zone"},
     Default = "Zone 1",
-    Callback = function(v) _G.MoridiwaaConfig.SelectedZone = v end
+    Callback = function(val) SelectedZone = val end
 })
 
-StealSec:Dropdown({
-    Name = "Select Egg Tier",
+SecStealConfig:Dropdown({
+    Name = "Select Tier / Rarity",
     Options = {"All", "Common", "Rare", "Epic", "Legendary", "Mythic", "Secret"},
-    Default = "Common",
-    Callback = function(v) _G.MoridiwaaConfig.SelectedTier = v end
-})
-
-StealSec:Dropdown({
-    Name = "Target Egg Name",
-    Options = {"All", "Dragon Egg", "Golden Egg", "Diamond Egg", "Void Egg"},
     Default = "All",
-    Callback = function(v) _G.MoridiwaaConfig.SelectedEgg = v end
+    Callback = function(val) SelectedRarity = val end
 })
 
-local SpeedSec = StealTab:Section({ Side = "Right", Name = "Steal Speed & Safety" })
-
-SpeedSec:Slider({
-    Name = "Going Speed (Outbound)",
-    Min = 50, Max = 1000, Default = 250,
-    Callback = function(v) _G.MoridiwaaConfig.GoSpeed = v end
+SecStealConfig:Input({
+    Name = "Target Specific Egg/Pet Name",
+    Placeholder = "Leave empty for all...",
+    Callback = function(val) TargetPetName = val end
 })
 
-SpeedSec:Slider({
-    Name = "Return Speed (Egg Protection)",
-    Min = 16, Max = 100, Default = 24,
-    Callback = function(v) _G.MoridiwaaConfig.ReturnSpeed = v end
+local SecStealControl = TabSteal:Section({Name = "Steal Movement Controls"})
+
+SecStealControl:Toggle({
+    Name = "Enable Auto Steal",
+    Default = false,
+    Callback = function(state) AutoSteal = state end
 })
 
--- ------------------------------------------------------------
--- 2. FARM & UPGRADES TAB
--- ------------------------------------------------------------
-local TreadSec = FarmTab:Section({ Side = "Left", Name = "Treadmill Automation" })
+SecStealControl:Slider({
+    Name = "Approach Speed (To Egg)",
+    Min = 16,
+    Max = 300,
+    Default = 60,
+    Callback = function(val) StealSpeed = val end
+})
 
-TreadSec:Toggle({
+SecStealControl:Slider({
+    Name = "Safe Speed Return (Prevents Egg Drop)",
+    Min = 10,
+    Max = 30,
+    Default = 18,
+    Callback = function(val) ReturnSpeed = val end
+})
+
+-- 2. FARMING & TRAILS TAB
+local SecTreadmill = TabFarm:Section({Name = "Treadmill Auto Farm"})
+
+SecTreadmill:Toggle({
     Name = "Auto Treadmill",
     Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.AutoTreadmill = v end
+    Callback = function(state) AutoTreadmill = state end
 })
 
-TreadSec:Toggle({
+SecTreadmill:Toggle({
     Name = "Auto Upgrade Treadmill",
     Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.AutoUpgradeTreadmill = v end
+    Callback = function(state) AutoUpgradeTreadmill = state end
 })
 
-local TrailSec = FarmTab:Section({ Side = "Right", Name = "Trails System" })
+local SecTrails = TabFarm:Section({Name = "Trails Shop & Equip"})
 
-TrailSec:Dropdown({
+SecTrails:Dropdown({
     Name = "Select Trail to Buy",
-    Options = {"Speed Trail 1", "Speed Trail 2", "Rainbow Trail", "Golden Trail"},
-    Default = "Speed Trail 1",
-    Callback = function(v) _G.MoridiwaaConfig.SelectedBuyTrail = v end
+    Options = {"Basic Trail", "Speed Trail", "Fire Trail", "Rainbow Trail", "Golden Trail"},
+    Default = "Basic Trail",
+    Callback = function(val) SelectedTrailToBuy = val end
 })
 
-TrailSec:Toggle({
-    Name = "Auto Buy Trail",
+SecTrails:Toggle({
+    Name = "Auto Buy Selected Trail",
     Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.AutoBuyTrail = v end
+    Callback = function(state) AutoBuyTrail = state end
 })
 
-TrailSec:Dropdown({
+SecTrails:Dropdown({
     Name = "Select Trail to Equip",
-    Options = {"Speed Trail 1", "Speed Trail 2", "Rainbow Trail", "Golden Trail"},
-    Default = "Speed Trail 1",
-    Callback = function(v) _G.MoridiwaaConfig.SelectedEquipTrail = v end
+    Options = {"Basic Trail", "Speed Trail", "Fire Trail", "Rainbow Trail", "Golden Trail"},
+    Default = "Basic Trail",
+    Callback = function(val) SelectedTrailToEquip = val end
 })
 
-TrailSec:Toggle({
-    Name = "Auto Equip Trail",
+SecTrails:Toggle({
+    Name = "Auto Equip Selected Trail",
     Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.AutoEquipTrail = v end
+    Callback = function(state) AutoEquipTrail = state end
 })
 
--- ------------------------------------------------------------
--- 3. ESP VISUALS TAB
--- ------------------------------------------------------------
-local PetESPSec = VisualTab:Section({ Side = "Left", Name = "Pet ESP" })
+local SecEvents = TabFarm:Section({Name = "Event Farming"})
 
-PetESPSec:Toggle({
+SecEvents:Toggle({
+    Name = "Auto Farm Current Event",
+    Default = false,
+    Callback = function(state) AutoEvent = state end
+})
+
+-- 3. VISUALS & ESP TAB
+local SecPetESP = TabESP:Section({Name = "Pet ESP Controls"})
+
+SecPetESP:Toggle({
     Name = "Enable Pet ESP",
     Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.PetESP = v end
+    Callback = function(state) PetESPEnabled = state end
 })
 
-PetESPSec:Dropdown({
-    Name = "Filter Pet Tier",
-    Options = {"All", "Common", "Rare", "Epic", "Legendary", "Mythic"},
-    Default = "All",
-    Callback = function(v) _G.MoridiwaaConfig.PetFilterTier = v end
-})
-
-local EggESPSec = VisualTab:Section({ Side = "Right", Name = "Base & Other Eggs ESP" })
-
-EggESPSec:Toggle({
-    Name = "Enable Egg ESP",
-    Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.EggESP = v end
-})
-
-EggESPSec:Dropdown({
-    Name = "Filter Egg Tier",
+SecPetESP:Dropdown({
+    Name = "Filter Pet Rarity",
     Options = {"All", "Common", "Rare", "Epic", "Legendary", "Mythic", "Secret"},
     Default = "All",
-    Callback = function(v) _G.MoridiwaaConfig.EggFilterTier = v end
+    Callback = function(val) PetESPFilterRarity = val end
 })
 
--- ------------------------------------------------------------
--- 4. EVENTS & WEBHOOK TAB
--- ------------------------------------------------------------
-local EventSec = EventTab:Section({ Side = "Left", Name = "Auto New Event" })
+SecPetESP:Input({
+    Name = "Search Specific Pet Name",
+    Placeholder = "Filter name...",
+    Callback = function(val) PetESPTargetName = val end
+})
 
-EventSec:Toggle({
-    Name = "Auto Complete All Event Features",
+SecPetESP:Toggle({Name = "Show Weight", Default = true, Callback = function(v) ShowPetWeight = v end})
+SecPetESP:Toggle({Name = "Show Price", Default = true, Callback = function(v) ShowPetPrice = v end})
+SecPetESP:Toggle({Name = "Show Mutation", Default = true, Callback = function(v) ShowPetMutation = v end})
+SecPetESP:Toggle({Name = "Show Rarity", Default = true, Callback = function(v) ShowPetRarity = v end})
+
+local SecEggESP = TabESP:Section({Name = "Base & Player Egg ESP"})
+
+SecEggESP:Toggle({
+    Name = "Enable Base / Egg ESP",
     Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.AutoEvent = v end
+    Callback = function(state) EggESPEnabled = state end
 })
 
-local WebhookSec = EventTab:Section({ Side = "Right", Name = "Discord Webhook Logger" })
-
-WebhookSec:Toggle({
-    Name = "Enable Webhook",
-    Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.WebhookEnabled = v end
+SecEggESP:Dropdown({
+    Name = "Filter Egg Rarity",
+    Options = {"All", "Common", "Rare", "Epic", "Legendary", "Mythic", "Secret"},
+    Default = "All",
+    Callback = function(val) EggESPFilterRarity = val end
 })
 
-WebhookSec:Input({
-    Name = "Webhook URL",
-    Placeholder = "https://discord.com/api/webhooks/...",
-    Callback = function(v) _G.MoridiwaaConfig.WebhookURL = v end
+SecEggESP:Input({
+    Name = "Search Specific Egg Name",
+    Placeholder = "Filter egg...",
+    Callback = function(val) EggESPTargetName = val end
 })
 
-WebhookSec:Button({
-    Name = "Test Send Webhook",
-    Callback = function()
-        if _G.MoridiwaaConfig.WebhookURL ~= "" then
-            local data = {
-                embeds = {{
-                    title = "Moridiwaa - Steal an Egg",
-                    description = "Webhook connection test successful!",
-                    color = 65535
-                }}
-            }
-            if httpRequest then
-                httpRequest({
-                    Url = _G.MoridiwaaConfig.WebhookURL,
-                    Method = "POST",
-                    Headers = {["Content-Type"] = "application/json"},
-                    Body = HttpService:JSONEncode(data)
-                })
-            end
-        end
-    end
-})
+SecEggESP:Toggle({Name = "Show Weight", Default = true, Callback = function(v) ShowEggWeight = v end})
+SecEggESP:Toggle({Name = "Show Price", Default = true, Callback = function(v) ShowEggPrice = v end})
+SecEggESP:Toggle({Name = "Show Mutation", Default = true, Callback = function(v) ShowEggMutation = v end})
+SecEggESP:Toggle({Name = "Show Rarity", Default = true, Callback = function(v) ShowEggRarity = v end})
 
--- ------------------------------------------------------------
--- 5. PLAYER MOVEMENT TAB
--- ------------------------------------------------------------
-local MoveSec = PlayerTab:Section({ Side = "Left", Name = "Movement Modifiers" })
+-- 4. PLAYER & WEBHOOK TAB
+local SecPlayer = TabPlayer:Section({Name = "Player Speed & Fly"})
 
-MoveSec:Toggle({
+SecPlayer:Toggle({
     Name = "Enable Custom Walk Speed",
     Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.SpeedEnabled = v end
+    Callback = function(state) SpeedEnabled = state end
 })
 
-MoveSec:Slider({
-    Name = "Walk Speed (Max 1000)",
-    Min = 16, Max = 1000, Default = 100,
-    Callback = function(v) _G.MoridiwaaConfig.WalkSpeed = v end
+SecPlayer:Slider({
+    Name = "Walk Speed",
+    Min = 16,
+    Max = 300,
+    Default = 16,
+    Callback = function(val) CustomSpeed = val end
 })
 
-MoveSec:Toggle({
+SecPlayer:Toggle({
     Name = "Enable Fly",
     Default = false,
-    Callback = function(v) _G.MoridiwaaConfig.FlyEnabled = v end
+    Callback = function(state) FlyEnabled = state end
 })
 
-MoveSec:Slider({
+SecPlayer:Slider({
     Name = "Fly Speed",
-    Min = 10, Max = 500, Default = 50,
-    Callback = function(v) _G.MoridiwaaConfig.FlySpeed = v end
+    Min = 10,
+    Max = 200,
+    Default = 50,
+    Callback = function(val) FlySpeed = val end
 })
 
--- ------------------------------------------------------------
--- 6. CONFIG & THEMES TAB
--- ------------------------------------------------------------
-local ThemeSec = ConfigTab:Section({ Side = "Left", Name = "UI Theme Selector" })
+local SecWebhook = TabPlayer:Section({Name = "Discord Webhook"})
 
-ThemeSec:Dropdown({
-    Name = "Select 5-Color Theme Preset",
-    Options = {"Cyber Cyan", "Crimson Red", "Neon Violet", "Emerald Green", "Gold Amber"},
-    Default = "Cyber Cyan",
-    Callback = function(v) ApplyFullTheme(v) end
+SecWebhook:Input({
+    Name = "Discord Webhook URL",
+    Placeholder = "https://discord.com/api/webhooks/...",
+    Callback = function(val) WebhookURL = val end
 })
 
-local ConfigSec = ConfigTab:Section({ Side = "Right", Name = "Config Save / Load" })
+SecWebhook:Toggle({
+    Name = "Enable Webhook Notifications",
+    Default = false,
+    Callback = function(state) WebhookEnabled = state end
+})
 
-local ConfigFileName = "Moridiwaa_StealAnEgg.json"
+-- 5. SETTINGS & CONFIG TAB
+local SecThemes = TabSettings:Section({Name = "UI Themes"})
 
-ConfigSec:Button({
+SecThemes:Dropdown({
+    Name = "Theme Presets",
+    Options = {"Mac Dark", "Cyber Red", "Neon Violet", "Emerald Green", "Gold Amber"},
+    Default = "Mac Dark",
+    Callback = function(themeName)
+        if ThemePresets[themeName] then
+            CurrentTheme.Accent = ThemePresets[themeName].Accent
+            CurrentTheme.Primary = ThemePresets[themeName].Primary
+        end
+    end
+})
+
+local SecConfig = TabSettings:Section({Name = "Config Manager"})
+
+SecConfig:Input({
+    Name = "Config Name",
+    Placeholder = "Default...",
+    Callback = function(val) CurrentConfigName = val end
+})
+
+SecConfig:Button({
     Name = "Save Config",
     Callback = function()
-        if writefile then
-            writefile(ConfigFileName, HttpService:JSONEncode(_G.MoridiwaaConfig))
-        end
+        local data = {
+            AutoSteal = AutoSteal,
+            StealSpeed = StealSpeed,
+            ReturnSpeed = ReturnSpeed,
+            AutoTreadmill = AutoTreadmill,
+            CustomSpeed = CustomSpeed,
+            SpeedEnabled = SpeedEnabled
+        }
+        writefile(ConfigFolder .. "/" .. CurrentConfigName .. ".json", HttpService:JSONEncode(data))
     end
 })
 
-ConfigSec:Button({
+SecConfig:Button({
     Name = "Load Config",
     Callback = function()
-        if readfile and isfile and isfile(ConfigFileName) then
-            local loaded = HttpService:JSONDecode(readfile(ConfigFileName))
-            for k, v in pairs(loaded) do
-                _G.MoridiwaaConfig[k] = v
-            end
-            ApplyFullTheme(_G.MoridiwaaConfig.CurrentTheme or "Cyber Cyan")
+        local filePath = ConfigFolder .. "/" .. CurrentConfigName .. ".json"
+        if isfile(filePath) then
+            local data = HttpService:JSONDecode(readfile(filePath))
+            AutoSteal = data.AutoSteal or false
+            StealSpeed = data.StealSpeed or 60
+            ReturnSpeed = data.ReturnSpeed or 18
+            AutoTreadmill = data.AutoTreadmill or false
+            CustomSpeed = data.CustomSpeed or 16
+            SpeedEnabled = data.SpeedEnabled or false
         end
     end
 })
 
 -- ============================================================
--- CORE LOGIC LOOPS & ENGINE
+-- SAFE ENGINE LOOPS
 -- ============================================================
 
--- Anti-AFK
-LP.Idled:Connect(function()
-    VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-    task.wait(1)
-    VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
-end)
-
--- WalkSpeed Engine
+-- Safe Speed Application
 RunService.Heartbeat:Connect(function()
     local char = LP.Character
     local hum = char and char:FindFirstChildOfClass("Humanoid")
-    if hum then
-        if _G.MoridiwaaConfig.SpeedEnabled then
-            hum.WalkSpeed = _G.MoridiwaaConfig.WalkSpeed
+    if not hum then return end
+
+    local holdingEgg = char:FindFirstChild("Egg") or char:FindFirstChild("CarriedEgg")
+    IsCarryingEgg = holdingEgg ~= nil
+
+    if AutoSteal then
+        if IsCarryingEgg then
+            hum.WalkSpeed = ReturnSpeed
+        else
+            hum.WalkSpeed = StealSpeed
         end
+    elseif SpeedEnabled then
+        hum.WalkSpeed = CustomSpeed
     end
 end)
 
--- Auto Steal Logic (Fast Out / Safe Return)
-task.spawn(function()
-    while task.wait(0.1) do
-        if _G.MoridiwaaConfig.AutoSteal then
-            local char = LP.Character
-            local hum = char and char:FindFirstChildOfClass("Humanoid")
-            local hrp = char and char:FindFirstChild("HumanoidRootPart")
-            
-            if char and hum and hrp then
-                local carryingEgg = char:FindFirstChild("Egg") or char:FindFirstChildWithTag("CarryingEgg")
-                
-                if carryingEgg then
-                    -- Safe speed return so egg doesn't reset
-                    hum.WalkSpeed = _G.MoridiwaaConfig.ReturnSpeed
-                else
-                    -- Fast sprint outbound to target
-                    if _G.MoridiwaaConfig.SpeedEnabled then
-                        hum.WalkSpeed = _G.MoridiwaaConfig.GoSpeed
-                    end
-                end
-            end
-        end
-    end
-end)
+-- Protected ESP Generator
+local function CreateESPContainer(model, titleText, detailsText, color)
+    if model:FindFirstChild("MoridiwaaESP") then return end
 
--- Auto Treadmill & Upgrades
-task.spawn(function()
-    while task.wait(0.5) do
-        if _G.MoridiwaaConfig.AutoTreadmill then
-            local remote = ReplicatedStorage:FindFirstChild("TreadmillRemote", true) or ReplicatedStorage:FindFirstChild("Train", true)
-            if remote and remote:IsA("RemoteEvent") then
-                remote:FireServer()
-            end
-        end
-        if _G.MoridiwaaConfig.AutoUpgradeTreadmill then
-            local upgRemote = ReplicatedStorage:FindFirstChild("UpgradeTreadmill", true)
-            if upgRemote and upgRemote:IsA("RemoteEvent") then
-                upgRemote:FireServer()
-            end
-        end
-    end
-end)
-
--- Auto Buy & Equip Trails
-task.spawn(function()
-    while task.wait(1) do
-        if _G.MoridiwaaConfig.AutoBuyTrail then
-            local buyRemote = ReplicatedStorage:FindFirstChild("BuyTrail", true)
-            if buyRemote then
-                buyRemote:FireServer(_G.MoridiwaaConfig.SelectedBuyTrail)
-            end
-        end
-        if _G.MoridiwaaConfig.AutoEquipTrail then
-            local equipRemote = ReplicatedStorage:FindFirstChild("EquipTrail", true)
-            if equipRemote then
-                equipRemote:FireServer(_G.MoridiwaaConfig.SelectedEquipTrail)
-            end
-        end
-    end
-end)
-
--- Auto Event System
-task.spawn(function()
-    while task.wait(1) do
-        if _G.MoridiwaaConfig.AutoEvent then
-            local eventRemote = ReplicatedStorage:FindFirstChild("ClaimEventReward", true) or ReplicatedStorage:FindFirstChild("EventRemote", true)
-            if eventRemote then
-                eventRemote:FireServer()
-            end
-        end
-    end
-end)
-
--- ESP Engine for Pets and Eggs
-local ESPContainer = {}
-
-local function CreateDetailBillboard(parent, textInfo)
     local bb = Instance.new("BillboardGui")
-    bb.Size = UDim2.fromOffset(200, 70)
+    bb.Name = "MoridiwaaESP"
+    bb.Size = UDim2.fromOffset(180, 50)
     bb.AlwaysOnTop = true
     bb.StudsOffset = Vector3.new(0, 3, 0)
-    bb.Parent = parent
+    bb.Parent = model
 
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.fromScale(1, 1)
-    label.BackgroundTransparency = 1
-    label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    label.TextStrokeTransparency = 0.2
-    label.Font = Enum.Font.GothamBold
-    label.TextSize = 12
-    label.Text = textInfo
-    label.Parent = bb
+    local mainLabel = Instance.new("TextLabel")
+    mainLabel.Size = UDim2.new(1, 0, 0, 22)
+    mainLabel.BackgroundTransparency = 1
+    mainLabel.Text = titleText
+    mainLabel.TextColor3 = color or CurrentTheme.Accent
+    mainLabel.Font = Enum.Font.GothamBold
+    mainLabel.TextSize = 14
+    mainLabel.Parent = bb
 
-    return bb
+    local subLabel = Instance.new("TextLabel")
+    subLabel.Position = UDim2.fromOffset(0, 22)
+    subLabel.Size = UDim2.new(1, 0, 0, 25)
+    subLabel.BackgroundTransparency = 1
+    subLabel.Text = detailsText
+    subLabel.TextColor3 = Color3.fromRGB(230, 230, 235)
+    subLabel.Font = Enum.Font.Gotham
+    subLabel.TextSize = 11
+    subLabel.Parent = bb
 end
 
+-- ESP Loop
 RunService.RenderStepped:Connect(function()
-    -- Render Pet ESP
-    if _G.MoridiwaaConfig.PetESP then
-        for _, obj in ipairs(workspace:GetDescendants()) do
-            if obj:FindFirstChild("Weight") or obj:FindFirstChild("Price") or obj:FindFirstChild("Mutation") then
-                if not ESPContainer[obj] then
-                    local w = obj:FindFirstChild("Weight") and obj.Weight.Value or "N/A"
-                    local p = obj:FindFirstChild("Price") and obj.Price.Value or "N/A"
-                    local m = obj:FindFirstChild("Mutation") and obj.Mutation.Value or "None"
-                    local r = obj:FindFirstChild("Rarity") and obj.Rarity.Value or "Common"
-                    
-                    local info = string.format("[%s]\nWeight: %s | Price: %s\nMutation: %s | Rarity: %s", obj.Name, tostring(w), tostring(p), tostring(m), tostring(r))
-                    ESPContainer[obj] = CreateDetailBillboard(obj, info)
+    if PetESPEnabled or EggESPEnabled then
+        for _, obj in ipairs(Workspace:GetDescendants()) do
+            if obj:IsA("Model") and (obj:FindFirstChild("HumanoidRootPart") or obj.PrimaryPart) then
+                local isEgg = obj.Name:lower():find("egg")
+                local isPet = obj.Name:lower():find("pet") or obj:FindFirstChild("PetData")
+
+                if isPet and PetESPEnabled then
+                    local weight = obj:GetAttribute("Weight") or "N/A"
+                    local price = obj:GetAttribute("Price") or "N/A"
+                    local mutation = obj:GetAttribute("Mutation") or "None"
+                    local rarity = obj:GetAttribute("Rarity") or "Common"
+
+                    local info = ""
+                    if ShowPetWeight then info = info .. "Weight: " .. tostring(weight) .. " | " end
+                    if ShowPetPrice then info = info .. "$" .. tostring(price) .. "\n" end
+                    if ShowPetMutation then info = info .. "Mut: " .. tostring(mutation) .. " | " end
+                    if ShowPetRarity then info = info .. rarity end
+
+                    CreateESPContainer(obj, "🐾 " .. obj.Name, info, Color3.fromRGB(100, 220, 255))
+                elseif isEgg and EggESPEnabled then
+                    local weight = obj:GetAttribute("Weight") or "N/A"
+                    local price = obj:GetAttribute("Price") or "N/A"
+                    local rarity = obj:GetAttribute("Rarity") or "Common"
+
+                    local info = ""
+                    if ShowEggWeight then info = info .. "Weight: " .. tostring(weight) .. " | " end
+                    if ShowEggPrice then info = info .. "$" .. tostring(price) .. "\n" end
+                    if ShowEggRarity then info = info .. rarity end
+
+                    CreateESPContainer(obj, "🥚 " .. obj.Name, info, Color3.fromRGB(255, 200, 80))
                 end
             end
         end
-    else
-        for k, v in pairs(ESPContainer) do
-            if v then v:Destroy() end
-            ESPContainer[k] = nil
-        end
+    end
+end)
+
+-- Safe Randomized Auto Farm Loop
+task.spawn(function()
+    while true do
+        -- Randomized delay to bypass server anti-spam detection
+        task.wait(math.random(8, 14) / 10)
+
+        pcall(function()
+            local remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage
+
+            if AutoTreadmill then
+                local trainRemote = remotes:FindFirstChild("TreadmillTrain") or remotes:FindFirstChild("Train")
+                if trainRemote then trainRemote:FireServer() end
+            end
+
+            if AutoUpgradeTreadmill then
+                local upgradeRemote = remotes:FindFirstChild("UpgradeTreadmill")
+                if upgradeRemote then upgradeRemote:FireServer() end
+            end
+
+            if AutoBuyTrail then
+                local buyRemote = remotes:FindFirstChild("BuyTrail")
+                if buyRemote then buyRemote:FireServer(SelectedTrailToBuy) end
+            end
+
+            if AutoEquipTrail then
+                local equipRemote = remotes:FindFirstChild("EquipTrail")
+                if equipRemote then equipRemote:FireServer(SelectedTrailToEquip) end
+            end
+
+            if AutoEvent then
+                local eventRemote = remotes:FindFirstChild("ClaimEventReward") or remotes:FindFirstChild("EventAction")
+                if eventRemote then eventRemote:FireServer() end
+            end
+        end)
     end
 end)
