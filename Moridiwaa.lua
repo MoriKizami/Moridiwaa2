@@ -1,19 +1,21 @@
 --[[
     Moridiwaa - Player Control Panel (Client-Side Standalone Version)
     Features:
-    - ESP / Fly / Speed / Noclip
-    - Client-Side Rejoin / Server Hop / Low Ping Hop (No server script required)
-    - Dynamic UI Color & Custom Theme Customization (RGB)
+    - ESP / Fly / Speed / Noclip / Anti-AFK
+    - Advanced Aimbot (FOV Circle, Camera Lock, Silent Aim / Bullet Tracking)
+    - Client-Side Rejoin / Server Hop / Low Ping Hop
+    - Dynamic UI Color Customization & Draggable UI
 ]]
 
 local Players = game:GetService("Players")
 local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
+local VirtualUser = game:GetService("VirtualUser")
 
 local LP = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
 local MAX_PLAYERS = 50
 local STUDS_TO_METERS = 1
 
@@ -21,11 +23,12 @@ local STUDS_TO_METERS = 1
 local AccentColor = Color3.fromRGB(80, 140, 240) -- Default Cyan/Blue Accent
 local ThemeElements = {}
 
-local ESPEnabled = true
-local ShowNames = true
-local ShowDistance = true
-local HighlightEnabled = true
-local AlwaysOnTop = true
+-- Feature States (All Default OFF)
+local ESPEnabled = false
+local ShowNames = false
+local ShowDistance = false
+local HighlightEnabled = false
+local AlwaysOnTop = false
 
 local Selected = {}
 local ESP = {}
@@ -36,10 +39,32 @@ local WalkSpeed = 16
 local WalkSpeedEnabled = false
 local NoclipEnabled = false
 
+-- Aimbot States
+local AimbotEnabled = false
+local SilentAimEnabled = false
+local ShowFOVCircle = false
+local FOVSize = 150
+
+local AntiAFKEnabled = false
+
 local FlyVelocity
 local FlyConnection
 local NoclipConnection
 local MovementConnection
+
+-- FOV Circle (Using Drawing API if available)
+local FOVCircle = nil
+if typeof(Drawing) == "table" or typeof(Drawing) == "function" then
+    pcall(function()
+        FOVCircle = Drawing.new("Circle")
+        FOVCircle.Thickness = 1.5
+        FOVCircle.NumSides = 60
+        FOVCircle.Filled = false
+        FOVCircle.Transparency = 1
+        FOVCircle.Color = AccentColor
+        FOVCircle.Visible = false
+    end)
+end
 
 -- Theme Functions
 local function RegisterThemeElement(instance, property, colorType)
@@ -63,6 +88,51 @@ local function UpdateTheme(newColor)
             e.Highlight.FillColor = AccentColor
         end
     end
+    if FOVCircle then
+        FOVCircle.Color = AccentColor
+    end
+end
+
+-- Function สำหรับทำให้ UI ลากเคลื่อนย้ายได้
+local function MakeDraggable(gui, handle)
+    handle = handle or gui
+    local dragging, dragInput, dragStart, startPos
+
+    local function update(input)
+        local delta = input.Position - dragStart
+        gui.Position = UDim2.new(
+            startPos.X.Scale, 
+            startPos.X.Offset + delta.X, 
+            startPos.Y.Scale, 
+            startPos.Y.Offset + delta.Y
+        )
+    end
+
+    handle.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            dragging = true
+            dragStart = input.Position
+            startPos = gui.Position
+
+            input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    dragging = false
+                end
+            end)
+        end
+    end)
+
+    handle.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+            dragInput = input
+        end
+    end)
+
+    UIS.InputChanged:Connect(function(input)
+        if input == dragInput and dragging then
+            update(input)
+        end
+    end)
 end
 
 -- ============================================================
@@ -75,13 +145,42 @@ Gui.ResetOnSpawn = false
 Gui.IgnoreGuiInset = true
 Gui.Parent = LP:WaitForChild("PlayerGui")
 
+-- Floating Toggle Button
+local ToggleBtn = Instance.new("TextButton")
+ToggleBtn.Name = "OpenCloseToggle"
+ToggleBtn.Size = UDim2.fromOffset(60, 32)
+ToggleBtn.Position = UDim2.new(0.5, -30, 0, 10)
+ToggleBtn.BackgroundColor3 = Color3.fromRGB(20, 21, 24)
+ToggleBtn.Text = "UI"
+ToggleBtn.TextColor3 = Color3.fromRGB(235, 235, 235)
+ToggleBtn.Font = Enum.Font.GothamBold
+ToggleBtn.TextSize = 14
+ToggleBtn.Parent = Gui
+
+local ToggleCorner = Instance.new("UICorner")
+ToggleCorner.CornerRadius = UDim.new(0, 8)
+ToggleCorner.Parent = ToggleBtn
+
+local ToggleStroke = Instance.new("UIStroke")
+ToggleStroke.Thickness = 2
+ToggleStroke.Color = AccentColor
+ToggleStroke.Parent = ToggleBtn
+RegisterThemeElement(ToggleStroke, "Color", "Accent")
+
+MakeDraggable(ToggleBtn, ToggleBtn)
+
+-- Main Frame
 local Main = Instance.new("Frame")
 Main.Name = "Window"
 Main.Size = UDim2.fromOffset(820, 540)
-Main.Position = UDim2.new(.5, -410, .5, -270)
+Main.Position = UDim2.new(0.5, -410, 0, 50)
 Main.BackgroundColor3 = Color3.fromRGB(17, 18, 21)
 Main.BorderSizePixel = 0
 Main.Parent = Gui
+
+ToggleBtn.MouseButton1Click:Connect(function()
+    Main.Visible = not Main.Visible
+end)
 
 local MainCorner = Instance.new("UICorner")
 MainCorner.CornerRadius = UDim.new(0, 12)
@@ -93,6 +192,8 @@ Top.Size = UDim2.new(1, 0, 0, 55)
 Top.BackgroundColor3 = Color3.fromRGB(20, 21, 24)
 Top.BorderSizePixel = 0
 Top.Parent = Main
+
+MakeDraggable(Main, Top)
 
 local TopAccentBar = Instance.new("Frame")
 TopAccentBar.Size = UDim2.new(1, 0, 0, 3)
@@ -127,7 +228,7 @@ local Hint = Instance.new("TextLabel")
 Hint.Position = UDim2.new(1, -180, 0, 20)
 Hint.Size = UDim2.fromOffset(150, 20)
 Hint.BackgroundTransparency = 1
-Hint.Text = "Left Ctrl  •  Toggle"
+Hint.Text = "Left Ctrl / Button • Toggle"
 Hint.TextColor3 = Color3.fromRGB(110,110,115)
 Hint.Font = Enum.Font.Gotham
 Hint.TextSize = 11
@@ -167,9 +268,10 @@ local function SidebarButton(text, y)
 end
 
 local MainTab = SidebarButton("◉   Main", 20)
-local PlayersTab = SidebarButton("♙   Players", 70)
-local VisualTab = SidebarButton("▦   Visuals", 120)
-local OthersTab = SidebarButton("⚙   Others", 170)
+local AimbotTab = SidebarButton("🎯   Aimbot", 70)
+local PlayersTab = SidebarButton("♙   Players", 120)
+local VisualTab = SidebarButton("▦   Visuals", 170)
+local OthersTab = SidebarButton("⚙   Others", 220)
 
 -- Content
 local Content = Instance.new("Frame")
@@ -196,6 +298,7 @@ local function Page(name)
 end
 
 local MainPage = Page("Main")
+local AimbotPage = Page("Aimbot")
 local PlayerPage = Page("Players")
 local VisualPage = Page("Visuals")
 local OtherPage = Page("Others")
@@ -322,7 +425,7 @@ local function SetStatus(text)
 end
 
 -- ============================================================
--- CLIENT-SIDE SERVER FUNCTIONS (REJOIN / HOP / LOW PING)
+-- CLIENT-SIDE SERVER FUNCTIONS
 -- ============================================================
 
 local function RejoinServer()
@@ -403,7 +506,7 @@ local function HopLowPing()
 
     for _, server in ipairs(data.data) do
         if type(server) == "table" and server.id ~= game.JobId and server.playing < server.maxPlayers then
-            local ping = server.ping or server.playing -- Fallback to lowest player density if ping hidden
+            local ping = server.ping or server.playing
             if ping < lowestPing then
                 lowestPing = ping
                 bestServer = server
@@ -425,7 +528,7 @@ end
 
 local MainCard = Card(MainPage,20,20,570,220,"Master Controls")
 
-Toggle(MainCard,"Player ESP",55,true,function(v)
+Toggle(MainCard,"Player ESP",55,false,function(v)
     ESPEnabled = v
     for _,e in pairs(ESP) do
         e.Highlight.Enabled = v and HighlightEnabled
@@ -433,17 +536,18 @@ Toggle(MainCard,"Player ESP",55,true,function(v)
     end
 end)
 
-Toggle(MainCard,"Show Player Names",100,true,function(v)
+Toggle(MainCard,"Show Player Names",100,false,function(v)
     ShowNames = v
     for _,e in pairs(ESP) do
         e.Billboard.Enabled = ESPEnabled and v
     end
 end)
 
-Toggle(MainCard,"Show Distance",145,true,function(v)
+Toggle(MainCard,"Show Distance",145,false,function(v)
     ShowDistance = v
 end)
 
+-- Movement Card
 local MovementCard = Card(MainPage,20,260,570,280,"Movement")
 
 Toggle(MovementCard,"Fly",55,false,function(state)
@@ -566,7 +670,7 @@ Toggle(MovementCard,"Noclip",145,false,function(state)
     end
 end)
 
-NumberBox(MovementCard,"Walk Speed",190,WalkSpeed,16,200,function(value)
+NumberBox(MovementCard,"Walk Speed",190,WalkSpeed,16,300,function(value)
     WalkSpeed = value
 
     local character = LP.Character
@@ -577,33 +681,56 @@ NumberBox(MovementCard,"Walk Speed",190,WalkSpeed,16,200,function(value)
     end
 end)
 
-NumberBox(MovementCard,"Fly Speed",230,FlySpeed,10,200,function(value)
+NumberBox(MovementCard,"Fly Speed",230,FlySpeed,10,300,function(value)
     FlySpeed = value
 end)
 
 MainPage.CanvasSize = UDim2.fromOffset(0,560)
 
 -- ============================================================
--- Visuals & Theme Color Customization
+-- Aimbot Page (Advanced Circle Aimbot & Bullet Lock)
+-- ============================================================
+
+local AimbotCard = Card(AimbotPage,20,20,570,270,"Aimbot & Bullet Lock")
+
+Toggle(AimbotCard,"Enable Camera Lock (Hold RMB)",55,false,function(v)
+    AimbotEnabled = v
+end)
+
+Toggle(AimbotCard,"Silent Aim / Bullet Lock (กระสุนล็อค)",100,false,function(v)
+    SilentAimEnabled = v
+end)
+
+Toggle(AimbotCard,"Show FOV Circle",145,false,function(v)
+    ShowFOVCircle = v
+end)
+
+NumberBox(AimbotCard,"FOV Radius / Size",190,FOVSize,10,800,function(value)
+    FOVSize = value
+end)
+
+AimbotPage.CanvasSize = UDim2.fromOffset(0,320)
+
+-- ============================================================
+-- Visuals & Theme
 -- ============================================================
 
 local VisualCard = Card(VisualPage,20,20,570,160,"Visual Settings")
 
-Toggle(VisualCard,"Highlight Players",55,true,function(v)
+Toggle(VisualCard,"Highlight Players",55,false,function(v)
     HighlightEnabled = v
     for _,e in pairs(ESP) do
         e.Highlight.Enabled = ESPEnabled and v
     end
 end)
 
-Toggle(VisualCard,"Always On Top",100,true,function(v)
+Toggle(VisualCard,"Always On Top",100,false,function(v)
     AlwaysOnTop = v
     for _,e in pairs(ESP) do
         e.Billboard.AlwaysOnTop = v
     end
 end)
 
--- UI Theme Customization Card
 local ThemeCard = Card(VisualPage,20,200,570,280,"UI Color Theme Settings")
 
 local PresetLabel = Instance.new("TextLabel")
@@ -646,7 +773,6 @@ for i, p in ipairs(Presets) do
     end)
 end
 
--- Custom RGB Controls
 local curR, curG, curB = 80, 140, 240
 
 NumberBox(ThemeCard, "Custom Red (R)", 170, curR, 0, 255, function(v)
@@ -800,7 +926,7 @@ end
 -- Others Page
 -- ============================================================
 
-local OtherCard = Card(OtherPage,20,20,570,320,"Server Functions")
+local OtherCard = Card(OtherPage,20,20,570,380,"Server & Misc Functions")
 
 local function ActionButton(text, y)
     local b = Instance.new("TextButton")
@@ -823,10 +949,14 @@ local Rejoin = ActionButton("↻   Rejoin Current Server",60)
 local Hop = ActionButton("⇄   Server Hop",112)
 local LowPing = ActionButton("⌁   Hop to Low Ping",164)
 
+Toggle(OtherCard, "Anti-AFK", 220, false, function(v)
+    AntiAFKEnabled = v
+end)
+
 local ServerStatusLabel = Instance.new("TextLabel")
 ServerStatusLabel.Name = "ServerStatusLabel"
-ServerStatusLabel.Position = UDim2.fromOffset(18,225)
-ServerStatusLabel.Size = UDim2.new(1,-36,0,60)
+ServerStatusLabel.Position = UDim2.fromOffset(18,275)
+ServerStatusLabel.Size = UDim2.new(1,-36,0,80)
 ServerStatusLabel.BackgroundTransparency = 1
 ServerStatusLabel.Text = "Ready"
 ServerStatusLabel.TextColor3 = Color3.fromRGB(120,120,125)
@@ -848,7 +978,15 @@ LowPing.MouseButton1Click:Connect(function()
     HopLowPing()
 end)
 
-OtherPage.CanvasSize = UDim2.fromOffset(0,360)
+OtherPage.CanvasSize = UDim2.fromOffset(0,420)
+
+-- Anti-AFK Logic
+LP.Idled:Connect(function()
+    if AntiAFKEnabled then
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.zero)
+    end
+end)
 
 -- ============================================================
 -- Tabs
@@ -856,6 +994,7 @@ OtherPage.CanvasSize = UDim2.fromOffset(0,360)
 
 local Tabs = {
     {MainTab,MainPage},
+    {AimbotTab,AimbotPage},
     {PlayersTab,PlayerPage},
     {VisualTab,VisualPage},
     {OthersTab,OtherPage}
@@ -879,6 +1018,7 @@ local function OpenPage(page)
 end
 
 MainTab.MouseButton1Click:Connect(function() OpenPage(MainPage) end)
+AimbotTab.MouseButton1Click:Connect(function() OpenPage(AimbotPage) end)
 PlayersTab.MouseButton1Click:Connect(function() OpenPage(PlayerPage) end)
 VisualTab.MouseButton1Click:Connect(function() OpenPage(VisualPage) end)
 OthersTab.MouseButton1Click:Connect(function() OpenPage(OtherPage) end)
@@ -896,6 +1036,69 @@ UIS.InputBegan:Connect(function(input, processed)
         Main.Visible = not Main.Visible
     end
 end)
+
+-- ============================================================
+-- AIMBOT & SILENT AIM CORE LOGIC
+-- ============================================================
+
+-- ค้นหาผู้เล่นที่อยู่ใกล้เคอร์เซอร์เมาส์มากที่สุดภายใต้วงกลม FOV
+local function GetClosestPlayerInFOV()
+    local closestPlayer = nil
+    local shortestDistance = FOVSize
+    local mousePos = UIS:GetMouseLocation()
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LP and player.Character then
+            local hum = player.Character:FindFirstChildOfClass("Humanoid")
+            local head = player.Character:FindFirstChild("Head") or player.Character:FindFirstChild("HumanoidRootPart")
+            if hum and hum.Health > 0 and head then
+                local pos, onScreen = Camera:WorldToViewportPoint(head.Position)
+                if onScreen then
+                    local distance = (Vector2.new(pos.X, pos.Y) - mousePos).Magnitude
+                    if distance <= shortestDistance then
+                        shortestDistance = distance
+                        closestPlayer = player
+                    end
+                end
+            end
+        end
+    end
+    return closestPlayer
+end
+
+-- Hook Raycast สำหรับกระสุนล็อค (Silent Aim / Bullet Lock)
+local rawmeta = getrawmetatable or (debug and debug.getmetatable)
+if rawmeta then
+    local gmt = rawmeta(game)
+    local oldNamecall = gmt.__namecall
+    local setreadonly = setreadonly or make_writeable or function() end
+
+    if setreadonly and gmt then
+        setreadonly(gmt, false)
+
+        gmt.__namecall = newcclosure(function(self, ...)
+            local method = getnamecallmethod and getnamecallmethod()
+            local args = {...}
+
+            if SilentAimEnabled and (method == "Raycast" or method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList") then
+                local target = GetClosestPlayerInFOV()
+                if target and target.Character then
+                    local head = target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart")
+                    if head then
+                        if method == "Raycast" and args[1] then
+                            local origin = args[1]
+                            args[2] = (head.Position - origin).Unit * 5000
+                            return oldNamecall(self, unpack(args))
+                        end
+                    end
+                end
+            end
+            return oldNamecall(self, ...)
+        end)
+
+        setreadonly(gmt, true)
+    end
+end
 
 -- ============================================================
 -- Loops & Events
@@ -925,6 +1128,25 @@ MovementConnection = RunService.Heartbeat:Connect(function()
 end)
 
 RunService.RenderStepped:Connect(function()
+    -- อัปเดตตำแหน่งและการแสดงผลวงกลม FOV
+    if FOVCircle then
+        FOVCircle.Visible = ShowFOVCircle
+        FOVCircle.Radius = FOVSize
+        FOVCircle.Position = UIS:GetMouseLocation()
+    end
+
+    -- Camera Lock Logic (หันกล้องล็อคเป้าทันทีเมื่อกดคลิกขวาค้างไว้)
+    if AimbotEnabled and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
+        local target = GetClosestPlayerInFOV()
+        if target and target.Character then
+            local head = target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart")
+            if head then
+                Camera.CFrame = CFrame.new(Camera.CFrame.Position, head.Position)
+            end
+        end
+    end
+
+    -- ESP Logic
     if not ESPEnabled then
         return
     end
