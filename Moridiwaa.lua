@@ -5,6 +5,11 @@
     - Advanced Aimbot (FOV Circle, Camera Lock, Silent Aim / Bullet Tracking)
     - Client-Side Rejoin / Server Hop / Low Ping Hop
     - Dynamic UI Color Customization & Draggable UI
+    - Integrated Auto Tab:
+        * Auto Fishing (Perfect Cast + Auto Hook Bite State + Real-time Lock-on Reel)
+        * Independent Auto Equip Rod
+        * Auto Sell All Fish via "SellIds" on Bag Full 500/500 (Auto Rare Confirm)
+        * Open Fish Shop GUI Anywhere
 ]]
 
 local Players = game:GetService("Players")
@@ -13,6 +18,9 @@ local RunService = game:GetService("RunService")
 local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local VirtualUser = game:GetService("VirtualUser")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local CollectionService = game:GetService("CollectionService")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LP = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
@@ -20,10 +28,10 @@ local MAX_PLAYERS = 50
 local STUDS_TO_METERS = 1
 
 -- Theme / Accent Color System
-local AccentColor = Color3.fromRGB(80, 140, 240) -- Default Cyan/Blue Accent
+local AccentColor = Color3.fromRGB(80, 140, 240)
 local ThemeElements = {}
 
--- Feature States (All Default OFF)
+-- Feature States
 local ESPEnabled = false
 local ShowNames = false
 local ShowDistance = false
@@ -47,12 +55,27 @@ local FOVSize = 150
 
 local AntiAFKEnabled = false
 
+-- ============================================================
+-- AUTO FISHING & SELLING STATES
+-- ============================================================
+local AutoFishingEnabled = false
+local AutoEquipEnabled = false
+local AutoSellEnabled = false
+local ROD_ID = 6958
+local isHoldingInput = false
+
+local Remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
+local FishingRemotes = Remotes and Remotes:WaitForChild("Fishing", 10)
+local FishingAction = FishingRemotes and FishingRemotes:WaitForChild("Action", 10)
+local InventoryAction = Remotes and Remotes:WaitForChild("Inventory", 10) and Remotes.Inventory:WaitForChild("Action", 10)
+local FishShopRequest = Remotes and Remotes:WaitForChild("FishShop", 10) and Remotes.FishShop:WaitForChild("Request", 10)
+
 local FlyVelocity
 local FlyConnection
 local NoclipConnection
 local MovementConnection
 
--- FOV Circle (Using Drawing API if available)
+-- FOV Circle
 local FOVCircle = nil
 if typeof(Drawing) == "table" or typeof(Drawing) == "function" then
     pcall(function()
@@ -93,7 +116,6 @@ local function UpdateTheme(newColor)
     end
 end
 
--- Function สำหรับทำให้ UI ลากเคลื่อนย้ายได้
 local function MakeDraggable(gui, handle)
     handle = handle or gui
     local dragging, dragInput, dragStart, startPos
@@ -145,7 +167,6 @@ Gui.ResetOnSpawn = false
 Gui.IgnoreGuiInset = true
 Gui.Parent = LP:WaitForChild("PlayerGui")
 
--- Floating Toggle Button
 local ToggleBtn = Instance.new("TextButton")
 ToggleBtn.Name = "OpenCloseToggle"
 ToggleBtn.Size = UDim2.fromOffset(60, 32)
@@ -169,7 +190,6 @@ RegisterThemeElement(ToggleStroke, "Color", "Accent")
 
 MakeDraggable(ToggleBtn, ToggleBtn)
 
--- Main Frame
 local Main = Instance.new("Frame")
 Main.Name = "Window"
 Main.Size = UDim2.fromOffset(820, 540)
@@ -186,7 +206,6 @@ local MainCorner = Instance.new("UICorner")
 MainCorner.CornerRadius = UDim.new(0, 12)
 MainCorner.Parent = Main
 
--- Top bar
 local Top = Instance.new("Frame")
 Top.Size = UDim2.new(1, 0, 0, 55)
 Top.BackgroundColor3 = Color3.fromRGB(20, 21, 24)
@@ -235,7 +254,6 @@ Hint.TextSize = 11
 Hint.TextXAlignment = Enum.TextXAlignment.Right
 Hint.Parent = Top
 
--- Sidebar
 local Sidebar = Instance.new("Frame")
 Sidebar.Position = UDim2.fromOffset(0, 55)
 Sidebar.Size = UDim2.fromOffset(190, 485)
@@ -246,12 +264,12 @@ Sidebar.Parent = Main
 local function SidebarButton(text, y)
     local b = Instance.new("TextButton")
     b.Position = UDim2.fromOffset(15, y)
-    b.Size = UDim2.fromOffset(160, 43)
+    b.Size = UDim2.fromOffset(160, 40)
     b.BackgroundColor3 = Color3.fromRGB(14,15,17)
     b.TextColor3 = Color3.fromRGB(155,155,160)
     b.Text = text
     b.Font = Enum.Font.GothamMedium
-    b.TextSize = 14
+    b.TextSize = 13
     b.TextXAlignment = Enum.TextXAlignment.Left
     b.AutoButtonColor = false
     b.Parent = Sidebar
@@ -267,13 +285,13 @@ local function SidebarButton(text, y)
     return b
 end
 
-local MainTab = SidebarButton("◉   Main", 20)
-local AimbotTab = SidebarButton("🎯   Aimbot", 70)
-local PlayersTab = SidebarButton("♙   Players", 120)
-local VisualTab = SidebarButton("▦   Visuals", 170)
-local OthersTab = SidebarButton("⚙   Others", 220)
+local MainTab = SidebarButton("◉    Main", 15)
+local AutoTab = SidebarButton("🤖    Auto", 62)
+local AimbotTab = SidebarButton("🎯    Aimbot", 109)
+local PlayersTab = SidebarButton("♙    Players", 156)
+local VisualTab = SidebarButton("▦    Visuals", 203)
+local OthersTab = SidebarButton("⚙    Others", 250)
 
--- Content
 local Content = Instance.new("Frame")
 Content.Position = UDim2.fromOffset(190, 55)
 Content.Size = UDim2.new(1, -190, 1, -55)
@@ -298,12 +316,12 @@ local function Page(name)
 end
 
 local MainPage = Page("Main")
+local AutoPage = Page("Auto")
 local AimbotPage = Page("Aimbot")
 local PlayerPage = Page("Players")
 local VisualPage = Page("Visuals")
 local OtherPage = Page("Others")
 
--- Helpers
 local function Card(parent, x, y, w, h, title)
     local c = Instance.new("Frame")
     c.Position = UDim2.fromOffset(x,y)
@@ -417,113 +435,353 @@ local function NumberBox(parent, labelText, y, initial, minValue, maxValue, call
     return box
 end
 
-local function SetStatus(text)
-    local status = OtherPage:FindFirstChild("ServerStatusLabel")
-    if status then
-        status.Text = text
-    end
-end
-
 -- ============================================================
--- CLIENT-SIDE SERVER FUNCTIONS
+-- AUTO FISHING & SELLING CORE ENGINE
 -- ============================================================
 
-local function RejoinServer()
-    SetStatus("Rejoining current server...")
-    if #Players:GetPlayers() <= 1 then
-        LP:Kick("\nRejoining server...")
-        task.wait(.5)
-        TeleportService:Teleport(game.PlaceId, LP)
-    else
-        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP)
+local function setHoldState(shouldHold, clickPos)
+    if isHoldingInput == shouldHold then return end
+    isHoldingInput = shouldHold
+    local pos = clickPos or Vector2.new(500, 500)
+    if mouse1press and mouse1release then
+        if shouldHold then mouse1press() else mouse1release() end
+    end
+    if VirtualInputManager then
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(pos.X, pos.Y, 0, shouldHold, game, 0)
+        end)
     end
 end
 
-local function ServerHop()
-    SetStatus("Searching for another server...")
-    local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/0?sortOrder=Desc&limit=100"
-    
-    local ok, response = pcall(function()
-        return game:HttpGet(url)
-    end)
-    
-    if not ok or not response then
-        SetStatus("Failed to fetch server list!")
-        return
-    end
-
-    local data
-    local parseOk = pcall(function()
-        data = HttpService:JSONDecode(response)
-    end)
-
-    if not parseOk or not data or not data.data then
-        SetStatus("Error reading server response!")
-        return
-    end
-
-    local validServers = {}
-    for _, server in ipairs(data.data) do
-        if type(server) == "table" and server.id ~= game.JobId and server.playing < server.maxPlayers then
-            table.insert(validServers, server)
-        end
-    end
-
-    if #validServers > 0 then
-        local target = validServers[math.random(1, #validServers)]
-        SetStatus("Teleporting to server: " .. string.sub(target.id, 1, 8) .. "...")
-        TeleportService:TeleportToPlaceInstance(game.PlaceId, target.id, LP)
-    else
-        SetStatus("No alternative servers found!")
-    end
-end
-
-local function HopLowPing()
-    SetStatus("Finding lowest ping server...")
-    local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/0?sortOrder=Asc&limit=100"
-    
-    local ok, response = pcall(function()
-        return game:HttpGet(url)
-    end)
-
-    if not ok or not response then
-        SetStatus("Failed to fetch server list!")
-        return
-    end
-
-    local data
-    local parseOk = pcall(function()
-        data = HttpService:JSONDecode(response)
-    end)
-
-    if not parseOk or not data or not data.data then
-        SetStatus("Error reading server response!")
-        return
-    end
-
-    local bestServer = nil
-    local lowestPing = math.huge
-
-    for _, server in ipairs(data.data) do
-        if type(server) == "table" and server.id ~= game.JobId and server.playing < server.maxPlayers then
-            local ping = server.ping or server.playing
-            if ping < lowestPing then
-                lowestPing = ping
-                bestServer = server
+local function getEquippedRod()
+    local char = LP.Character
+    if char then
+        for _, item in ipairs(char:GetChildren()) do
+            if item:IsA("Tool") and CollectionService:HasTag(item, "FishingRod") then
+                return item
             end
         end
     end
-
-    if bestServer then
-        SetStatus("Teleporting to optimal server: " .. string.sub(bestServer.id, 1, 8) .. "...")
-        TeleportService:TeleportToPlaceInstance(game.PlaceId, bestServer.id, LP)
-    else
-        SetStatus("No low ping server found!")
-    end
+    return nil
 end
 
+local function getMinigameElements()
+    local hud = LP.PlayerGui:FindFirstChild("FishingHud")
+    if not hud then return nil end
+    local reel = hud:FindFirstChild("Reel")
+    if not reel or not reel.Visible then return nil end
+    local water = reel:FindFirstChild("Water")
+    if not water then return nil end
+    return reel, water:FindFirstChild("Zone"), water:FindFirstChild("Fish")
+end
+
+local function findWaterTarget()
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return Vector3.new(-170.33, 12, -36.36) end
+
+    local forward = hrp.CFrame.LookVector
+    local rayParams = RaycastParams.new()
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.FilterDescendantsInstances = {char}
+    rayParams.IgnoreWater = false
+
+    local checkPos = hrp.Position + Vector3.new(forward.X, 0, forward.Z).Unit * 18
+    local hit = workspace:Raycast(checkPos + Vector3.new(0, 40, 0), Vector3.new(0, -120, 0), rayParams)
+    if hit and hit.Material == Enum.Material.Water then
+        return hit.Position
+    end
+    return hrp.Position + (forward * 16) - Vector3.new(0, 1.5, 0)
+end
+
+-- ตรวจสอบและดึงข้อมูลจำนวนปลาในกระเป๋า (นับ X/500)
+local function getInventoryFishCount()
+    local count = 0
+    for _, gui in ipairs(LP.PlayerGui:GetDescendants()) do
+        if gui:IsA("TextLabel") and gui.Visible then
+            local current, total = string.match(gui.Text, "(%d+)%s*/%s*(%d+)")
+            if current and total then
+                count = tonumber(current) or 0
+                return count, tonumber(total) or 500
+            end
+        end
+    end
+    local inv = LP:FindFirstChild("Inventory") or LP:FindFirstChild("Backpack")
+    if inv then
+        for _, item in ipairs(inv:GetChildren()) do
+            if CollectionService:HasTag(item, "Fish") or string.find(item.Name:lower(), "fish") then
+                count = count + 1
+            end
+        end
+    end
+    return count, 500
+end
+
+-- สแกนรวบรวม ID ปลาทั้งหมดในกระเป๋า
+local function getAllFishIds()
+    local fishIds = {}
+    local inv = LP:FindFirstChild("Inventory") or LP:FindFirstChild("Backpack")
+    if inv then
+        for _, item in ipairs(inv:GetChildren()) do
+            local id = item:GetAttribute("Id") or item:GetAttribute("FishId") or tonumber(item.Name)
+            if id and not table.find(fishIds, id) then
+                table.insert(fishIds, id)
+            end
+        end
+    end
+    for _, obj in ipairs(LP.PlayerGui:GetDescendants()) do
+        if obj:IsA("GuiObject") and obj.Visible then
+            local id = obj:GetAttribute("FishId") or obj:GetAttribute("Id") or tonumber(obj.Name)
+            if id and typeof(id) == "number" and id > 1000 and not table.find(fishIds, id) then
+                table.insert(fishIds, id)
+            end
+        end
+    end
+    local char = LP.Character
+    if char then
+        for _, item in ipairs(char:GetChildren()) do
+            local id = item:GetAttribute("Id") or item:GetAttribute("FishId")
+            if id and typeof(id) == "number" and not table.find(fishIds, id) then
+                table.insert(fishIds, id)
+            end
+        end
+    end
+    return fishIds
+end
+
+-- ฟังก์ชันขายปลาทั้งหมดผ่าน "SellIds" ตามที่ได้จาก Cobalt (รองรับปลาแรร์)
+local function SellAllFish()
+    if not FishShopRequest then
+        FishShopRequest = Remotes and Remotes:FindFirstChild("FishShop") and Remotes.FishShop:FindFirstChild("Request")
+    end
+    if not FishShopRequest then return false end
+
+    local ids = getAllFishIds()
+
+    if #ids > 0 then
+        pcall(function()
+            FishShopRequest:InvokeServer("SellIds", ids)
+        end)
+    else
+        pcall(function()
+            FishShopRequest:InvokeServer("GetShop")
+        end)
+        task.wait(0.2)
+        ids = getAllFishIds()
+        if #ids > 0 then
+            pcall(function()
+                FishShopRequest:InvokeServer("SellIds", ids)
+            end)
+        end
+    end
+
+    -- กดยืนยันอัตโนมัติสำหรับปลาแรร์ (Confirm Rare Fish)
+    pcall(function()
+        FishShopRequest:InvokeServer("ConfirmSell")
+    end)
+
+    for _, btn in ipairs(LP.PlayerGui:GetDescendants()) do
+        if btn:IsA("TextButton") and btn.Visible then
+            local text = btn.Text:lower()
+            if string.find(text, "ขาย") or string.find(text, "sell") or string.find(text, "ยืนยัน") or string.find(text, "confirm") then
+                pcall(function()
+                    btn.Activated:Fire()
+                end)
+            end
+        end
+    end
+    return true
+end
+
+-- ฟังก์ชันเปิดหน้าต่าง Fish Shop GUI
+local function OpenFishShopGui()
+    local success = false
+    if FishShopRequest then
+        pcall(function()
+            FishShopRequest:InvokeServer("Open")
+            FishShopRequest:InvokeServer("GetShop")
+            success = true
+        end)
+    end
+    for _, gui in ipairs(LP.PlayerGui:GetChildren()) do
+        if gui:IsA("ScreenGui") then
+            local shop = gui:FindFirstChild("FishShop", true) or gui:FindFirstChild("Shop", true)
+            if shop then
+                shop.Visible = true
+                success = true
+            end
+        end
+    end
+    return success
+end
+
+-- ลูป Auto Fishing & Auto Sell 500/500
+local AutoStatusLabel = nil
+task.spawn(function()
+    while true do
+        if AutoFishingEnabled then
+            -- 1. เช็คกระเป๋าเต็มก่อนเริ่มไม้ใหม่
+            if AutoSellEnabled then
+                local currentFish, maxFish = getInventoryFishCount()
+                if currentFish >= 500 or (maxFish and currentFish >= maxFish) then
+                    if AutoStatusLabel then
+                        AutoStatusLabel.Text = "สถานะ: กระเป๋าเต็ม (" .. currentFish .. "/" .. maxFish .. ") กำลังขายปลาทั้งหมด..."
+                    end
+                    SellAllFish()
+                    task.wait(2.0)
+                end
+            end
+
+            -- 2. ตรวจสอบเบ็ดในมือ (ไม่ Auto Equip อัตโนมัติ ให้ผู้ใช้เปิดเอง)
+            local rod = getEquippedRod()
+            if not rod then
+                if AutoStatusLabel then
+                    AutoStatusLabel.Text = "สถานะ: รอถือเบ็ด (โปรดเปิด Auto Equip หรือถือเบ็ดเอง)..."
+                end
+                task.wait(0.5)
+            else
+                local state = rod:GetAttribute("State") or "Idle"
+
+                -- ขั้นที่ 1: เหวี่ยงเบ็ดแบบ Perfect
+                if state == "Idle" then
+                    local waterPos = findWaterTarget()
+                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: เหวี่ยงเบ็ดแบบ Perfect! ✨" end
+                    FishingAction:FireServer("Cast", waterPos, true)
+                    task.wait(0.8)
+
+                -- ขั้นที่ 2: รอปลากินเบ็ด (เช็ค State จริง)
+                elseif state == "Casting" or state == "Waiting" then
+                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: กำลังรอปลากินเบ็ด..." end
+                    local waitStart = tick()
+                    while AutoFishingEnabled and (tick() - waitStart < 15) do
+                        if not rod or not rod.Parent then break end
+                        if rod:GetAttribute("State") == "Bite" then break end
+                        task.wait(0.03)
+                    end
+
+                -- ขั้นที่ 3: Hook ทันทีที่ปลากินเบ็ด
+                elseif state == "Bite" then
+                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: ปลากินแล้ว! Hook ทันที!" end
+                    FishingAction:FireServer("Hook")
+                    task.wait(0.2)
+
+                -- ขั้นที่ 4: ล็อกเป้าแถบเขียวตามตัวปลา (Lock-On Reel)
+                elseif state == "Reeling" then
+                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: ล็อกเป้าแถบเขียวตามตัวปลา 🎯" end
+                    while AutoFishingEnabled and rod and rod:GetAttribute("State") == "Reeling" do
+                        local reel, zone, fish = getMinigameElements()
+                        if reel and zone and fish and reel.Visible then
+                            local centerPos = reel.AbsolutePosition + (reel.AbsoluteSize / 2)
+                            local zoneCenter = zone.Position.X.Scale + (zone.Size.X.Scale / 2)
+                            local fishPos = fish.Position.X.Scale
+
+                            if fishPos > (zoneCenter + 0.015) then
+                                setHoldState(true, centerPos)
+                            elseif fishPos < (zoneCenter - 0.015) then
+                                setHoldState(false, centerPos)
+                            end
+                        end
+                        RunService.RenderStepped:Wait()
+                    end
+                    setHoldState(false)
+                    task.wait(0.4)
+
+                -- ขั้นที่ 5: ตกสำเร็จ รอเริ่มรอบใหม่
+                elseif state == "Caught" then
+                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: ได้ปลาสำเร็จ! กำลังเริ่มรอบถัดไป..." end
+                    task.wait(2.0)
+                else
+                    task.wait(0.15)
+                end
+            end
+        else
+            setHoldState(false)
+            task.wait(0.5)
+        end
+    end
+end)
+
+-- UI หน้าแท็บ Auto
+local AutoCard = Card(AutoPage, 20, 20, 570, 240, "Fishing Automation")
+
+Toggle(AutoCard, "Auto Fishing (Cast + Hook + Lock Reel)", 55, false, function(v)
+    AutoFishingEnabled = v
+    if not v and AutoStatusLabel then
+        AutoStatusLabel.Text = "สถานะ: หยุดตกปลาเรียบร้อย"
+        setHoldState(false)
+    end
+end)
+
+Toggle(AutoCard, "Auto Equip Rod (เบ็ดตกปลา)", 100, false, function(v)
+    AutoEquipEnabled = v
+    if InventoryAction then
+        if v then
+            InventoryAction:FireServer("Equip", ROD_ID)
+        else
+            InventoryAction:FireServer("Unequip")
+        end
+    end
+end)
+
+NumberBox(AutoCard, "Fishing Rod ID", 145, ROD_ID, 1, 999999, function(v)
+    ROD_ID = v
+end)
+
+AutoStatusLabel = Instance.new("TextLabel")
+AutoStatusLabel.Position = UDim2.fromOffset(18, 190)
+AutoStatusLabel.Size = UDim2.new(1, -36, 0, 35)
+AutoStatusLabel.BackgroundTransparency = 1
+AutoStatusLabel.Text = "สถานะ: พร้อมทำงาน"
+AutoStatusLabel.TextColor3 = Color3.fromRGB(150, 150, 155)
+AutoStatusLabel.Font = Enum.Font.Gotham
+AutoStatusLabel.TextSize = 12
+AutoStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+AutoStatusLabel.Parent = AutoCard
+
+-- การ์ดระบบขายปลา
+local SellCard = Card(AutoPage, 20, 280, 570, 190, "Auto Sell & Fish Shop")
+
+Toggle(SellCard, "Auto Sell When Bag Full (เต็ม 500 ขายทั้งหมด)", 55, false, function(v)
+    AutoSellEnabled = v
+end)
+
+local function AutoActionButton(parent, text, x, y, w, h, callback)
+    local b = Instance.new("TextButton")
+    b.Position = UDim2.fromOffset(x, y)
+    b.Size = UDim2.fromOffset(w, h)
+    b.BackgroundColor3 = Color3.fromRGB(32, 33, 37)
+    b.Text = text
+    b.TextColor3 = Color3.fromRGB(215, 215, 220)
+    b.Font = Enum.Font.GothamMedium
+    b.TextSize = 13
+    b.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 7)
+    corner.Parent = b
+
+    b.MouseButton1Click:Connect(callback)
+    return b
+end
+
+AutoActionButton(SellCard, "💰  Sell All Fish Now (ขายเดี๋ยวนี้)", 18, 105, 250, 40, function()
+    SellAllFish()
+    if AutoStatusLabel then
+        AutoStatusLabel.Text = "สถานะ: สั่งขายปลาทั้งหมดผ่าน SellIds เรียบร้อย"
+    end
+end)
+
+AutoActionButton(SellCard, "🏪  Open Fish Shop GUI", 280, 105, 250, 40, function()
+    OpenFishShopGui()
+    if AutoStatusLabel then
+        AutoStatusLabel.Text = "สถานะ: เปิดหน้าต่างร้านค้าขายปลาแล้ว"
+    end
+end)
+
+AutoPage.CanvasSize = UDim2.fromOffset(0, 500)
+
 -- ============================================================
--- Main page
+-- MAIN PAGE
 -- ============================================================
 
 local MainCard = Card(MainPage,20,20,570,220,"Master Controls")
@@ -547,7 +805,6 @@ Toggle(MainCard,"Show Distance",145,false,function(v)
     ShowDistance = v
 end)
 
--- Movement Card
 local MovementCard = Card(MainPage,20,260,570,280,"Movement")
 
 Toggle(MovementCard,"Fly",55,false,function(state)
@@ -628,10 +885,8 @@ end)
 
 Toggle(MovementCard,"Custom Walk Speed",100,false,function(state)
     WalkSpeedEnabled = state
-
     local character = LP.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-
     if humanoid then
         humanoid.WalkSpeed = state and WalkSpeed or 16
     end
@@ -639,7 +894,6 @@ end)
 
 Toggle(MovementCard,"Noclip",145,false,function(state)
     NoclipEnabled = state
-
     if NoclipConnection then
         NoclipConnection:Disconnect()
         NoclipConnection = nil
@@ -648,14 +902,9 @@ Toggle(MovementCard,"Noclip",145,false,function(state)
     if state then
         NoclipConnection = RunService.Stepped:Connect(function()
             local character = LP.Character
-            if not character then
-                return
-            end
-
+            if not character then return end
             for _,obj in ipairs(character:GetDescendants()) do
-                if obj:IsA("BasePart") then
-                    obj.CanCollide = false
-                end
+                if obj:IsA("BasePart") then obj.CanCollide = false end
             end
         end)
     else
@@ -672,10 +921,8 @@ end)
 
 NumberBox(MovementCard,"Walk Speed",190,WalkSpeed,16,300,function(value)
     WalkSpeed = value
-
     local character = LP.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
-
     if humanoid and WalkSpeedEnabled then
         humanoid.WalkSpeed = WalkSpeed
     end
@@ -688,7 +935,7 @@ end)
 MainPage.CanvasSize = UDim2.fromOffset(0,560)
 
 -- ============================================================
--- Aimbot Page (Advanced Circle Aimbot & Bullet Lock)
+-- AIMBOT PAGE
 -- ============================================================
 
 local AimbotCard = Card(AimbotPage,20,20,570,270,"Aimbot & Bullet Lock")
@@ -712,7 +959,7 @@ end)
 AimbotPage.CanvasSize = UDim2.fromOffset(0,320)
 
 -- ============================================================
--- Visuals & Theme
+-- VISUALS PAGE
 -- ============================================================
 
 local VisualCard = Card(VisualPage,20,20,570,160,"Visual Settings")
@@ -793,7 +1040,7 @@ end)
 VisualPage.CanvasSize = UDim2.fromOffset(0,500)
 
 -- ============================================================
--- Players
+-- PLAYERS PAGE & ESP
 -- ============================================================
 
 local PlayerCard = Card(PlayerPage,20,20,570,440,"Select Players")
@@ -810,31 +1057,18 @@ local PlayerLayout = Instance.new("UIListLayout")
 PlayerLayout.Padding = UDim.new(0,5)
 PlayerLayout.Parent = PlayerList
 
--- ============================================================
--- ESP
--- ============================================================
-
 local function RemoveESP(p)
     if ESP[p] then
-        if ESP[p].Highlight then
-            ESP[p].Highlight:Destroy()
-        end
-        if ESP[p].Billboard then
-            ESP[p].Billboard:Destroy()
-        end
+        if ESP[p].Highlight then ESP[p].Highlight:Destroy() end
+        if ESP[p].Billboard then ESP[p].Billboard:Destroy() end
         ESP[p] = nil
     end
 end
 
 local function CreateESP(p)
-    if p == LP or not Selected[p] or ESP[p] or not p.Character then
-        return
-    end
-
+    if p == LP or not Selected[p] or ESP[p] or not p.Character then return end
     local root = p.Character:FindFirstChild("HumanoidRootPart")
-    if not root then
-        return
-    end
+    if not root then return end
 
     local h = Instance.new("Highlight")
     h.Name = "PlayerESP"
@@ -858,36 +1092,23 @@ local function CreateESP(p)
     label.TextSize = 15
     label.Parent = bb
 
-    ESP[p] = {
-        Highlight = h,
-        Billboard = bb,
-        Label = label
-    }
-
+    ESP[p] = {Highlight = h, Billboard = bb, Label = label}
     h.Enabled = ESPEnabled and HighlightEnabled
     bb.Enabled = ESPEnabled and ShowNames
 end
 
 local function RefreshPlayers()
     for _,v in ipairs(PlayerList:GetChildren()) do
-        if v:IsA("TextButton") then
-            v:Destroy()
-        end
+        if v:IsA("TextButton") then v:Destroy() end
     end
-
     local count = 0
-
     for _,p in ipairs(Players:GetPlayers()) do
         if p ~= LP then
             count += 1
-
             if count <= MAX_PLAYERS then
                 local b = Instance.new("TextButton")
                 b.Size = UDim2.new(1,-10,0,38)
-                b.BackgroundColor3 = Selected[p]
-                    and Color3.fromRGB(55,70,58)
-                    or Color3.fromRGB(30,31,35)
-
+                b.BackgroundColor3 = Selected[p] and Color3.fromRGB(55,70,58) or Color3.fromRGB(30,31,35)
                 b.Text = (Selected[p] and "✓  " or "□  ") .. p.DisplayName
                 b.TextColor3 = Color3.fromRGB(210,210,212)
                 b.TextSize = 13
@@ -906,24 +1127,17 @@ local function RefreshPlayers()
 
                 b.MouseButton1Click:Connect(function()
                     Selected[p] = not Selected[p]
-
-                    if Selected[p] then
-                        CreateESP(p)
-                    else
-                        RemoveESP(p)
-                    end
-
+                    if Selected[p] then CreateESP(p) else RemoveESP(p) end
                     RefreshPlayers()
                 end)
             end
         end
     end
-
-    PlayerList.CanvasSize = UDim2.fromOffset(0,count * 43)
+    PlayerList.CanvasSize = UDim2.fromOffset(0, count * 43)
 end
 
 -- ============================================================
--- Others Page
+-- OTHERS PAGE
 -- ============================================================
 
 local OtherCard = Card(OtherPage,20,20,570,380,"Server & Misc Functions")
@@ -945,9 +1159,9 @@ local function ActionButton(text, y)
     return b
 end
 
-local Rejoin = ActionButton("↻   Rejoin Current Server",60)
-local Hop = ActionButton("⇄   Server Hop",112)
-local LowPing = ActionButton("⌁   Hop to Low Ping",164)
+local Rejoin = ActionButton("↻    Rejoin Current Server",60)
+local Hop = ActionButton("⇄    Server Hop",112)
+local LowPing = ActionButton("⌁    Hop to Low Ping",164)
 
 Toggle(OtherCard, "Anti-AFK", 220, false, function(v)
     AntiAFKEnabled = v
@@ -966,21 +1180,81 @@ ServerStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 ServerStatusLabel.TextWrapped = true
 ServerStatusLabel.Parent = OtherCard
 
-Rejoin.MouseButton1Click:Connect(function()
-    RejoinServer()
-end)
+local function SetStatus(text)
+    ServerStatusLabel.Text = text
+end
 
-Hop.MouseButton1Click:Connect(function()
-    ServerHop()
-end)
+local function RejoinServer()
+    SetStatus("Rejoining current server...")
+    if #Players:GetPlayers() <= 1 then
+        LP:Kick("\nRejoining server...")
+        task.wait(.5)
+        TeleportService:Teleport(game.PlaceId, LP)
+    else
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LP)
+    end
+end
 
-LowPing.MouseButton1Click:Connect(function()
-    HopLowPing()
-end)
+local function ServerHop()
+    SetStatus("Searching for another server...")
+    local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/0?sortOrder=Desc&limit=100"
+    local ok, response = pcall(function() return game:HttpGet(url) end)
+    if not ok or not response then SetStatus("Failed to fetch server list!") return end
 
+    local data
+    local parseOk = pcall(function() data = HttpService:JSONDecode(response) end)
+    if not parseOk or not data or not data.data then SetStatus("Error reading server response!") return end
+
+    local validServers = {}
+    for _, server in ipairs(data.data) do
+        if type(server) == "table" and server.id ~= game.JobId and server.playing < server.maxPlayers then
+            table.insert(validServers, server)
+        end
+    end
+
+    if #validServers > 0 then
+        local target = validServers[math.random(1, #validServers)]
+        SetStatus("Teleporting to server: " .. string.sub(target.id, 1, 8) .. "...")
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, target.id, LP)
+    else
+        SetStatus("No alternative servers found!")
+    end
+end
+
+local function HopLowPing()
+    SetStatus("Finding lowest ping server...")
+    local url = "https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/0?sortOrder=Asc&limit=100"
+    local ok, response = pcall(function() return game:HttpGet(url) end)
+    if not ok or not response then SetStatus("Failed to fetch server list!") return end
+
+    local data
+    local parseOk = pcall(function() data = HttpService:JSONDecode(response) end)
+    if not parseOk or not data or not data.data then SetStatus("Error reading server response!") return end
+
+    local bestServer, lowestPing = nil, math.huge
+    for _, server in ipairs(data.data) do
+        if type(server) == "table" and server.id ~= game.JobId and server.playing < server.maxPlayers then
+            local ping = server.ping or server.playing
+            if ping < lowestPing then
+                lowestPing = ping
+                bestServer = server
+            end
+        end
+    end
+
+    if bestServer then
+        SetStatus("Teleporting to optimal server: " .. string.sub(bestServer.id, 1, 8) .. "...")
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, bestServer.id, LP)
+    else
+        SetStatus("No low ping server found!")
+    end
+end
+
+Rejoin.MouseButton1Click:Connect(RejoinServer)
+Hop.MouseButton1Click:Connect(ServerHop)
+LowPing.MouseButton1Click:Connect(HopLowPing)
 OtherPage.CanvasSize = UDim2.fromOffset(0,420)
 
--- Anti-AFK Logic
 LP.Idled:Connect(function()
     if AntiAFKEnabled then
         VirtualUser:CaptureController()
@@ -989,15 +1263,16 @@ LP.Idled:Connect(function()
 end)
 
 -- ============================================================
--- Tabs
+-- TABS MANAGER
 -- ============================================================
 
 local Tabs = {
-    {MainTab,MainPage},
-    {AimbotTab,AimbotPage},
-    {PlayersTab,PlayerPage},
-    {VisualTab,VisualPage},
-    {OthersTab,OtherPage}
+    {MainTab, MainPage},
+    {AutoTab, AutoPage},
+    {AimbotTab, AimbotPage},
+    {PlayersTab, PlayerPage},
+    {VisualTab, VisualPage},
+    {OthersTab, OtherPage}
 }
 
 local function OpenPage(page)
@@ -1006,9 +1281,7 @@ local function OpenPage(page)
         data[1].BackgroundColor3 = Color3.fromRGB(14,15,17)
         data[1].TextColor3 = Color3.fromRGB(155,155,160)
     end
-
     page.Visible = true
-
     for _,data in ipairs(Tabs) do
         if data[2] == page then
             data[1].BackgroundColor3 = Color3.fromRGB(31,32,36)
@@ -1018,30 +1291,20 @@ local function OpenPage(page)
 end
 
 MainTab.MouseButton1Click:Connect(function() OpenPage(MainPage) end)
+AutoTab.MouseButton1Click:Connect(function() OpenPage(AutoPage) end)
 AimbotTab.MouseButton1Click:Connect(function() OpenPage(AimbotPage) end)
 PlayersTab.MouseButton1Click:Connect(function() OpenPage(PlayerPage) end)
 VisualTab.MouseButton1Click:Connect(function() OpenPage(VisualPage) end)
 OthersTab.MouseButton1Click:Connect(function() OpenPage(OtherPage) end)
 
--- ============================================================
--- Left Ctrl Toggle
--- ============================================================
-
+-- Keybind Toggle
 UIS.InputBegan:Connect(function(input, processed)
-    if processed then
-        return
-    end
-
-    if input.KeyCode == Enum.KeyCode.LeftControl then
+    if not processed and input.KeyCode == Enum.KeyCode.LeftControl then
         Main.Visible = not Main.Visible
     end
 end)
 
--- ============================================================
--- AIMBOT & SILENT AIM CORE LOGIC
--- ============================================================
-
--- ค้นหาผู้เล่นที่อยู่ใกล้เคอร์เซอร์เมาส์มากที่สุดภายใต้วงกลม FOV
+-- Aimbot Core Functions
 local function GetClosestPlayerInFOV()
     local closestPlayer = nil
     local shortestDistance = FOVSize
@@ -1066,7 +1329,6 @@ local function GetClosestPlayerInFOV()
     return closestPlayer
 end
 
--- Hook Raycast สำหรับกระสุนล็อค (Silent Aim / Bullet Lock)
 local rawmeta = getrawmetatable or (debug and debug.getmetatable)
 if rawmeta then
     local gmt = rawmeta(game)
@@ -1075,67 +1337,53 @@ if rawmeta then
 
     if setreadonly and gmt then
         setreadonly(gmt, false)
-
         gmt.__namecall = newcclosure(function(self, ...)
             local method = getnamecallmethod and getnamecallmethod()
             local args = {...}
-
             if SilentAimEnabled and (method == "Raycast" or method == "FindPartOnRay" or method == "FindPartOnRayWithIgnoreList") then
                 local target = GetClosestPlayerInFOV()
                 if target and target.Character then
                     local head = target.Character:FindFirstChild("Head") or target.Character:FindFirstChild("HumanoidRootPart")
-                    if head then
-                        if method == "Raycast" and args[1] then
-                            local origin = args[1]
-                            args[2] = (head.Position - origin).Unit * 5000
-                            return oldNamecall(self, unpack(args))
-                        end
+                    if head and method == "Raycast" and args[1] then
+                        local origin = args[1]
+                        args[2] = (head.Position - origin).Unit * 5000
+                        return oldNamecall(self, unpack(args))
                     end
                 end
             end
             return oldNamecall(self, ...)
         end)
-
         setreadonly(gmt, true)
     end
 end
 
 -- ============================================================
--- Loops & Events
+-- MAIN CONNECTIONS & LOOPS
 -- ============================================================
 
 MovementConnection = RunService.Heartbeat:Connect(function()
     local character = LP.Character
     local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return end
 
-    if not humanoid then
-        return
-    end
-
-    if WalkSpeedEnabled then
-        if math.abs(humanoid.WalkSpeed - WalkSpeed) > 0.01 then
-            humanoid.WalkSpeed = WalkSpeed
-        end
+    if WalkSpeedEnabled and math.abs(humanoid.WalkSpeed - WalkSpeed) > 0.01 then
+        humanoid.WalkSpeed = WalkSpeed
     end
 
     if NoclipEnabled and character then
         for _,obj in ipairs(character:GetDescendants()) do
-            if obj:IsA("BasePart") then
-                obj.CanCollide = false
-            end
+            if obj:IsA("BasePart") then obj.CanCollide = false end
         end
     end
 end)
 
 RunService.RenderStepped:Connect(function()
-    -- อัปเดตตำแหน่งและการแสดงผลวงกลม FOV
     if FOVCircle then
         FOVCircle.Visible = ShowFOVCircle
         FOVCircle.Radius = FOVSize
         FOVCircle.Position = UIS:GetMouseLocation()
     end
 
-    -- Camera Lock Logic (หันกล้องล็อคเป้าทันทีเมื่อกดคลิกขวาค้างไว้)
     if AimbotEnabled and UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton2) then
         local target = GetClosestPlayerInFOV()
         if target and target.Character then
@@ -1146,37 +1394,17 @@ RunService.RenderStepped:Connect(function()
         end
     end
 
-    -- ESP Logic
-    if not ESPEnabled then
-        return
-    end
-
-    local myCharacter = LP.Character
-    local myRoot = myCharacter and myCharacter:FindFirstChild("HumanoidRootPart")
-
-    if not myRoot then
-        return
-    end
+    if not ESPEnabled then return end
+    local myRoot = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not myRoot then return end
 
     for p,e in pairs(ESP) do
         if p.Character then
             local root = p.Character:FindFirstChild("HumanoidRootPart")
-
             if root then
-                local distance =
-                    (myRoot.Position - root.Position).Magnitude
-                    * STUDS_TO_METERS
-
+                local distance = (myRoot.Position - root.Position).Magnitude * STUDS_TO_METERS
                 if ShowNames then
-                    if ShowDistance then
-                        e.Label.Text =
-                            p.DisplayName ..
-                            "\n[" ..
-                            math.floor(distance) ..
-                            " m]"
-                    else
-                        e.Label.Text = p.DisplayName
-                    end
+                    e.Label.Text = ShowDistance and (p.DisplayName .. "\n[" .. math.floor(distance) .. " m]") or p.DisplayName
                 else
                     e.Label.Text = ""
                 end
@@ -1186,14 +1414,8 @@ RunService.RenderStepped:Connect(function()
 end)
 
 local function HookPlayer(p)
-    if p == LP then
-        return
-    end
-
-    if Selected[p] == nil then
-        Selected[p] = false
-    end
-
+    if p == LP then return end
+    if Selected[p] == nil then Selected[p] = false end
     p.CharacterAdded:Connect(function()
         task.wait(.5)
         RemoveESP(p)
@@ -1201,62 +1423,18 @@ local function HookPlayer(p)
     end)
 end
 
-for _,p in ipairs(Players:GetPlayers()) do
-    HookPlayer(p)
-end
-
-Players.PlayerAdded:Connect(function(p)
-    HookPlayer(p)
-    RefreshPlayers()
-end)
-
-Players.PlayerRemoving:Connect(function(p)
-    RemoveESP(p)
-    Selected[p] = nil
-    RefreshPlayers()
-end)
+for _,p in ipairs(Players:GetPlayers()) do HookPlayer(p) end
+Players.PlayerAdded:Connect(function(p) HookPlayer(p) RefreshPlayers() end)
+Players.PlayerRemoving:Connect(function(p) RemoveESP(p) Selected[p] = nil RefreshPlayers() end)
 
 LP.CharacterAdded:Connect(function(character)
     local humanoid = character:WaitForChild("Humanoid", 5)
-
-    if humanoid then
-        humanoid.WalkSpeed = WalkSpeedEnabled and WalkSpeed or 16
-    end
-
+    if humanoid then humanoid.WalkSpeed = WalkSpeedEnabled and WalkSpeed or 16 end
     if FlyEnabled then
         FlyEnabled = false
-
-        if FlyConnection then
-            FlyConnection:Disconnect()
-            FlyConnection = nil
-        end
-
-        if FlyVelocity then
-            FlyVelocity:Destroy()
-            FlyVelocity = nil
-        end
-
-        if humanoid then
-            humanoid.PlatformStand = false
-        end
-    end
-
-    if NoclipEnabled then
-        task.wait(.2)
-        if not NoclipConnection then
-            NoclipConnection = RunService.Stepped:Connect(function()
-                local char = LP.Character
-                if not char then
-                    return
-                end
-
-                for _,obj in ipairs(char:GetDescendants()) do
-                    if obj:IsA("BasePart") then
-                        obj.CanCollide = false
-                    end
-                end
-            end)
-        end
+        if FlyConnection then FlyConnection:Disconnect() FlyConnection = nil end
+        if FlyVelocity then FlyVelocity:Destroy() FlyVelocity = nil end
+        if humanoid then humanoid.PlatformStand = false end
     end
 end)
 
