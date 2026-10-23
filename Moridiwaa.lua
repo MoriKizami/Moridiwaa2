@@ -1,10 +1,13 @@
 --[[
     Moridiwaa - Player Control Panel (Client-Side Standalone Version)
     Features:
-    - 100% Perfect Cast Engine (Visual Effects + Faster Bite Rate)
+    - 100% Max Distance Perfect Cast (Y = 12.00 Fixed Water Level)
     - Auto Fishing (Perfect Cast + Auto Hook Bite State + Frame-by-Frame Reel Lock)
-    - Independent Auto Equip Rod
-    - Tween Auto Sell to NPC (Speed 10 - 100 + Bag Full 500/500 Detection)
+    - Independent Auto Equip Rod (ID 6958 / Backpack Auto-Detect)
+    - Tween Navigation & Selling:
+        * Tween to Fish Shop NPC (Button: Fly to NPC and stay there)
+        * Instant Auto Sell Toggle (Fly to NPC -> Sell All -> Return to original spot)
+        * Bag Full 500/500 Auto Sell Trigger
     - Full ESP, Movement, Aimbot, Server Hop
 ]]
 
@@ -53,11 +56,12 @@ local FOVSize = 150
 local AntiAFKEnabled = false
 
 -- ============================================================
--- AUTO FISHING & PERFECT CAST STATES
+-- AUTO FISHING & TWEEN SELL STATES
 -- ============================================================
 local AutoFishingEnabled = false
 local AutoEquipEnabled = false
 local AutoSellEnabled = false
+local InstantSellActive = false
 local ROD_ID = 6958
 local TweenSpeed = 45
 local isTweening = false
@@ -72,8 +76,6 @@ local FishShopRequest = FishShopRemotes and FishShopRemotes:WaitForChild("Reques
 
 -- โหลด Controllers และ Shared Configs แท้ของเกม
 local InventoryController = nil
-local FishShopController = nil
-local FishingFxController = nil
 local FishingConfig = nil
 
 local function getInventoryController()
@@ -84,26 +86,6 @@ local function getInventoryController()
         end)
     end
     return InventoryController
-end
-
-local function getFishShopController()
-    if not FishShopController then
-        pcall(function()
-            local controllers = LP:WaitForChild("PlayerScripts"):WaitForChild("Controllers")
-            FishShopController = require(controllers:WaitForChild("FishShopController"))
-        end)
-    end
-    return FishShopController
-end
-
-local function getFishingFxController()
-    if not FishingFxController then
-        pcall(function()
-            local controllers = LP:WaitForChild("PlayerScripts"):WaitForChild("Controllers")
-            FishingFxController = require(controllers:WaitForChild("FishingFxController"))
-        end)
-    end
-    return FishingFxController
 end
 
 local function getFishingConfig()
@@ -483,7 +465,7 @@ local function NumberBox(parent, labelText, y, initial, minValue, maxValue, call
 end
 
 -- ============================================================
--- 100% PERFECT CAST & FISHING CORE ENGINE
+-- 100% MAX DISTANCE CAST & TWEEN SELL ENGINE
 -- ============================================================
 
 local function setHoldState(shouldHold, clickPos)
@@ -500,16 +482,54 @@ local function setHoldState(shouldHold, clickPos)
     end
 end
 
+-- ตรวจหาเบ็ดในมือ
 local function getEquippedRod()
     local char = LP.Character
     if char then
         for _, item in ipairs(char:GetChildren()) do
-            if item:IsA("Tool") and CollectionService:HasTag(item, "FishingRod") then
+            if item:IsA("Tool") and (CollectionService:HasTag(item, "FishingRod") or string.find(item.Name:lower(), "rod")) then
                 return item
             end
         end
     end
     return nil
+end
+
+-- สวมใส่เบ็ด ID 6958 หรือสลับเก็บเข้ากระเป๋า
+local function SmartEquipRod(equipState)
+    local char = LP.Character
+    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
+    local backpack = LP:FindFirstChild("Backpack")
+
+    if not equipState then
+        if humanoid then humanoid:UnequipTools() end
+        if InventoryAction then
+            pcall(function() InventoryAction:FireServer("Unequip") end)
+        end
+        return true, "เก็บเบ็ดเรียบร้อย"
+    end
+
+    if getEquippedRod() then
+        return true, "ถือเบ็ดอยู่แล้ว"
+    end
+
+    -- ยิงสวมใส่ ID 6958 จาก Log ที่ดักจับได้ตรงๆ
+    if InventoryAction then
+        pcall(function() InventoryAction:FireServer("Equip", ROD_ID) end)
+    end
+
+    -- สวมใส่ Tool จาก Backpack เผื่อไว้
+    if backpack and humanoid then
+        for _, tool in ipairs(backpack:GetChildren()) do
+            if tool:IsA("Tool") and (CollectionService:HasTag(tool, "FishingRod") or string.find(tool.Name:lower(), "rod")) then
+                humanoid:EquipTool(tool)
+                task.wait(0.2)
+                break
+            end
+        end
+    end
+
+    return true, "สวมใส่เบ็ดเรียบร้อย"
 end
 
 local function getMinigameElements()
@@ -522,26 +542,37 @@ local function getMinigameElements()
     return reel, water:FindFirstChild("Zone"), water:FindFirstChild("Fish")
 end
 
-local function findWaterTarget()
+-- คำนวณพิกัดเหวี่ยงเบ็ดแบบเต็มหลอด 100% สายยาวที่สุด พร้อมล็อก Y = 12.00
+local function findMaxWaterTarget()
     local char = LP.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return Vector3.new(-170.33, 12, -36.36) end
+    if not hrp then return Vector3.new(-432.55, 12.00, -132.33) end
 
     local forward = hrp.CFrame.LookVector
+    local forwardDir = Vector3.new(forward.X, 0, forward.Z).Unit
+
+    local fConfig = getFishingConfig()
+    local maxDistance = (fConfig and fConfig.Cast and fConfig.Cast.MaxDistance) or 50
+
     local rayParams = RaycastParams.new()
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
     rayParams.FilterDescendantsInstances = {char}
     rayParams.IgnoreWater = false
 
-    local checkPos = hrp.Position + Vector3.new(forward.X, 0, forward.Z).Unit * 18
-    local hit = workspace:Raycast(checkPos + Vector3.new(0, 40, 0), Vector3.new(0, -120, 0), rayParams)
-    if hit and hit.Material == Enum.Material.Water then
-        return hit.Position
+    -- สแกนหาระดับผิวน้ำที่ระยะไกลสุด
+    for dist = maxDistance, 15, -3 do
+        local checkPos = hrp.Position + (forwardDir * dist)
+        local hit = workspace:Raycast(checkPos + Vector3.new(0, 30, 0), Vector3.new(0, -60, 0), rayParams)
+        if hit and (hit.Material == Enum.Material.Water or hit.Instance == workspace.Terrain) then
+            return Vector3.new(hit.Position.X, 12.00, hit.Position.Z)
+        end
     end
-    return hrp.Position + (forward * 16) - Vector3.new(0, 1.5, 0)
+
+    local fallback = hrp.Position + (forwardDir * maxDistance)
+    return Vector3.new(fallback.X, 12.00, fallback.Z)
 end
 
--- ดึงข้อมูลปลาในกระเป๋า 100%
+-- ดึงข้อมูลปลาในกระเป๋า
 local function getInventoryFishData()
     local totalFish = 0
     local sellableIds = {}
@@ -578,56 +609,6 @@ local function getInventoryFishData()
     return totalFish, maxCapacity, sellableIds
 end
 
--- ฟังก์ชันรัน Perfect Cast แบบสมบูรณ์ (แอนิเมชันเต็มหลอด + ส่ง Remote Flag true 100%)
-local function ExecutePerfectCast(rod, targetPos)
-    local fxCtrl = getFishingFxController()
-    local hud = LP.PlayerGui:FindFirstChild("FishingHud")
-    local powerFrame = hud and hud:FindFirstChild("Power", true)
-    local powerFill = powerFrame and powerFrame:FindFirstChild("Fill", true)
-    local powerLabel = powerFrame and powerFrame:FindFirstChild("Label", true)
-
-    -- 1. ชาร์จพลังหลอดขึ้นหน้าจอแบบเนียนตา (Smooth Power Charge)
-    if powerFrame then
-        powerFrame.Visible = true
-        if powerLabel then powerLabel.Text = "✨ เพอร์เฟกต์! ปล่อยเลย!" end
-        if powerFill then powerFill.Size = UDim2.fromScale(1, 1) end
-    end
-    if fxCtrl and rod then
-        pcall(function()
-            fxCtrl:SetCharge(rod, 1)
-        end)
-    end
-
-    task.wait(0.2)
-
-    -- 2. รันแอนิเมชันสะบัดคันเบ็ดและคลื่นผิวน้ำแท้ของเกม (Game PredictCast Visuals)
-    if fxCtrl and rod then
-        pcall(function()
-            fxCtrl:PredictCast(rod, targetPos)
-            fxCtrl:SetCharge(rod, nil)
-        end)
-    end
-    if powerFrame then
-        powerFrame.Visible = false
-    end
-
-    -- 3. ยิงคำสั่งเหวี่ยงเบ็ดพร้อมสิทธิ์ Perfect Cast (true) ไปยัง Server
-    FishingAction:FireServer("Cast", targetPos, true)
-
-    -- 4. แสดงข้อความแจ้งเตือนป๊อปอัปแท้ของเกม
-    pcall(function()
-        local toastLabel = hud and hud:FindFirstChild("Toast", true)
-        if toastLabel then
-            toastLabel.Text = "เพอร์เฟกต์! ✨ ปลาจะกินไวขึ้น"
-            toastLabel.TextColor3 = Color3.fromRGB(255, 214, 10)
-            toastLabel.Visible = true
-            task.delay(1.5, function()
-                if toastLabel then toastLabel.Visible = false end
-            end)
-        end
-    end)
-end
-
 -- ค้นหาพิกัดร้านค้าขายปลา
 local function getFishShopPosition()
     for _, obj in ipairs(CollectionService:GetTagged("FishShop")) do
@@ -649,7 +630,7 @@ local function getFishShopPosition()
     return nil
 end
 
--- Tween เคลื่อนที่อย่างปลอดภัยพร้อมเปิด Noclip
+-- Tween เคลื่อนที่อย่างปลอดภัยพร้อม Noclip ชั่วคราว
 local function TweenToPosition(targetPos, speed)
     local char = LP.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -677,7 +658,7 @@ local function TweenToPosition(targetPos, speed)
     return true
 end
 
--- ขายปลาผ่าน RemoteFunction "SellIds"
+-- สั่งขายปลาผ่าน "SellIds"
 local function SellAllFishNative()
     local _, _, sellableIds = getInventoryFishData()
     if #sellableIds == 0 then
@@ -702,7 +683,7 @@ local function SellAllFishNative()
     end
 end
 
--- การทำงานลูป Tween ไปร้านค้า -> สั่งขาย -> บินกลับจุดเดิม
+-- การทำงาน Tween ไปร้านค้า -> สั่งขาย -> บินกลับจุดเดิม
 local AutoStatusLabel = nil
 local BagCounterLabel = nil
 
@@ -748,32 +729,23 @@ local function ExecuteTweenAndSell()
     isTweening = false
 end
 
--- เปิดร้านค้าของแท้ของเกม
-local function OpenRealFishShop()
-    local shopGui = LP.PlayerGui:FindFirstChild("FishShopMenu") or LP.PlayerGui:FindFirstChild("MacUI")
-    if shopGui then
-        shopGui.Enabled = true
-        local panel = shopGui:FindFirstChild("Panel", true) or shopGui:FindFirstChild("Window", true)
-        if panel then
-            panel.Visible = true
-            return true
-        end
+-- ฟังก์ชันบินไปหา NPC หน้าร้านอย่างเดียว (ไม่บินกลับ)
+local function FlyToShopOnly()
+    if isTweening then return end
+    isTweening = true
+    local shopPos = getFishShopPosition()
+    if not shopPos then
+        if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: ไม่พบพิกัดร้านขายปลา!" end
+        isTweening = false
+        return
     end
-
-    local shopCtrl = getFishShopController()
-    if shopCtrl then
-        pcall(function()
-            local shopTarget = workspace:FindFirstChild("FishShop", true) or workspace
-            local openFn = shopCtrl.OpenShop or shopCtrl.openShop or shopCtrl.Open
-            if openFn then
-                openFn(shopTarget)
-            end
-        end)
-    end
-    return true
+    if AutoStatusLabel then AutoStatusLabel.Text = string.format("สถานะ: กำลังบินไปหาคนขายปลา (ความเร็ว: %d)...", TweenSpeed) end
+    TweenToPosition(shopPos, TweenSpeed)
+    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: ถึงหน้าร้านคนขายปลาแล้ว!" end
+    isTweening = false
 end
 
--- ลูปการทำงาน Auto Fishing & Auto Sell 500/500
+-- ลูปการทำงาน Auto Fishing & Auto Sell
 task.spawn(function()
     while true do
         pcall(function()
@@ -788,6 +760,15 @@ task.spawn(function()
             end
         end)
 
+        -- ถ้าเปิดโหมดขายทันที (Instant Auto Sell)
+        if InstantSellActive and not isTweening then
+            local _, _, sellableIds = getInventoryFishData()
+            if #sellableIds > 0 then
+                ExecuteTweenAndSell()
+                task.wait(1.0)
+            end
+        end
+
         if AutoFishingEnabled and not isTweening then
             -- เช็คกระเป๋าเต็ม 500/500 แล้วบินไปขายอัตโนมัติ
             if AutoSellEnabled then
@@ -800,24 +781,30 @@ task.spawn(function()
 
             -- เช็คการถือเบ็ด
             local rod = getEquippedRod()
+            if not rod and AutoEquipEnabled then
+                SmartEquipRod(true)
+                task.wait(0.4)
+                rod = getEquippedRod()
+            end
+
             if not rod then
                 if AutoStatusLabel and not isTweening then
-                    AutoStatusLabel.Text = "สถานะ: รอถือเบ็ด (กรุณาเปิด Auto Equip หรือถือเบ็ดเอง)..."
+                    AutoStatusLabel.Text = "สถานะ: รอถือเบ็ด (เปิด Auto Equip หรือถือเบ็ดเอง)..."
                 end
                 task.wait(0.5)
             else
                 local state = rod:GetAttribute("State") or "Idle"
 
-                -- 1. เหวี่ยงเบ็ดแบบ 100% Perfect Cast
+                -- 1. เหวี่ยงเต็มหลอด 100% สายยาวสุด (Y = 12.00)
                 if state == "Idle" then
-                    local waterPos = findWaterTarget()
-                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: เหวี่ยงเบ็ดแบบ 100% Perfect Cast! ✨" end
-                    ExecutePerfectCast(rod, waterPos)
+                    local maxWaterPos = findMaxWaterTarget()
+                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: เหวี่ยงเต็มหลอด 100% สายเบ็ดยาวสุด! ✨" end
+                    FishingAction:FireServer("Cast", maxWaterPos, true)
                     task.wait(0.8)
 
                 -- 2. รอปลากินเบ็ด (เช็ค State จริง)
                 elseif state == "Casting" or state == "Waiting" then
-                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: เพอร์เฟกต์แล้ว! กำลังรอปลากินเบ็ดไวขึ้น..." end
+                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: เพอร์เฟกต์เต็มหลอด! รอปลากินเบ็ด..." end
                     local waitStart = tick()
                     while AutoFishingEnabled and not isTweening and (tick() - waitStart < 15) do
                         if not rod or not rod.Parent then break end
@@ -827,7 +814,7 @@ task.spawn(function()
 
                 -- 3. Hook ทันทีที่ปลากินเบ็ด
                 elseif state == "Bite" then
-                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: ปลากินแล้ว! ส่งคำสั่ง Hook ทันที!" end
+                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: ปลากินแล้ว! Hook ทันที!" end
                     FishingAction:FireServer("Hook")
                     task.wait(0.2)
 
@@ -868,9 +855,9 @@ task.spawn(function()
 end)
 
 -- UI หน้าแท็บ Auto
-local AutoCard = Card(AutoPage, 20, 20, 570, 240, "Fishing Automation (100% Perfect Cast)")
+local AutoCard = Card(AutoPage, 20, 20, 570, 240, "Fishing Automation (Max Distance Cast)")
 
-Toggle(AutoCard, "Auto Fishing (Perfect Cast + Hook + Lock Reel)", 55, false, function(v)
+Toggle(AutoCard, "Auto Fishing (Cast + Hook + Lock Reel)", 55, false, function(v)
     AutoFishingEnabled = v
     if not v and AutoStatusLabel then
         AutoStatusLabel.Text = "สถานะ: หยุดตกปลาเรียบร้อย"
@@ -878,45 +865,45 @@ Toggle(AutoCard, "Auto Fishing (Perfect Cast + Hook + Lock Reel)", 55, false, fu
     end
 end)
 
-Toggle(AutoCard, "Auto Equip Rod (เบ็ดตกปลา)", 100, false, function(v)
+Toggle(AutoCard, "Auto Equip Rod (ถือเบ็ดอัตโนมัติ ID 6958)", 105, false, function(v)
     AutoEquipEnabled = v
-    if InventoryAction then
-        if v then
-            InventoryAction:FireServer("Equip", ROD_ID)
-        else
-            InventoryAction:FireServer("Unequip")
-        end
+    local success, msg = SmartEquipRod(v)
+    if AutoStatusLabel then
+        AutoStatusLabel.Text = "สถานะ: " .. msg
     end
 end)
 
-NumberBox(AutoCard, "Fishing Rod ID", 145, ROD_ID, 1, 999999, function(v)
-    ROD_ID = v
-end)
-
 AutoStatusLabel = Instance.new("TextLabel")
-AutoStatusLabel.Position = UDim2.fromOffset(18, 190)
+AutoStatusLabel.Position = UDim2.fromOffset(18, 175)
 AutoStatusLabel.Size = UDim2.new(1, -36, 0, 35)
 AutoStatusLabel.BackgroundTransparency = 1
-AutoStatusLabel.Text = "สถานะ: พร้อมทำงาน (100% Perfect Cast)"
+AutoStatusLabel.Text = "สถานะ: พร้อมทำงาน (Max Cast + Fixed Water 12.00)"
 AutoStatusLabel.TextColor3 = Color3.fromRGB(150, 150, 155)
 AutoStatusLabel.Font = Enum.Font.Gotham
 AutoStatusLabel.TextSize = 12
 AutoStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
 AutoStatusLabel.Parent = AutoCard
 
--- การ์ดระบบขายปลาแบบ Tween (Tween Auto Sell & Fish Shop)
-local SellCard = Card(AutoPage, 20, 280, 570, 250, "Tween Auto Sell & Fish Shop")
+-- การ์ดระบบขายปลาแบบ Tween (Tween Auto Sell & Navigation)
+local SellCard = Card(AutoPage, 20, 280, 570, 260, "Tween Auto Sell & Navigation")
 
-Toggle(SellCard, "Auto Sell When Bag Full (เต็ม 500 บินไปขายแล้วกลับ)", 50, false, function(v)
+Toggle(SellCard, "Auto Sell When Bag Full (เต็ม 500 บินไปขายแล้วกลับ)", 45, false, function(v)
     AutoSellEnabled = v
 end)
 
-NumberBox(SellCard, "Tween Speed (ความเร็วบิน 10 - 100)", 90, TweenSpeed, 10, 100, function(v)
+Toggle(SellCard, "Instant Auto Sell (เปิดเพื่อบินไปขายทันทีแล้วกลับ)", 88, false, function(v)
+    InstantSellActive = v
+    if v then
+        task.spawn(ExecuteTweenAndSell)
+    end
+end)
+
+NumberBox(SellCard, "Tween Speed (ความเร็วบิน 10 - 100)", 130, TweenSpeed, 10, 100, function(v)
     TweenSpeed = v
 end)
 
 BagCounterLabel = Instance.new("TextLabel")
-BagCounterLabel.Position = UDim2.fromOffset(18, 130)
+BagCounterLabel.Position = UDim2.fromOffset(18, 168)
 BagCounterLabel.Size = UDim2.new(1, -36, 0, 20)
 BagCounterLabel.BackgroundTransparency = 1
 BagCounterLabel.Text = "🎒 จำนวนปลา: กำลังตรวจสอบ..."
@@ -945,18 +932,17 @@ local function AutoActionButton(parent, text, x, y, w, h, callback)
     return b
 end
 
-AutoActionButton(SellCard, "🚀  Tween & Sell Now (บินไปขายเดี๋ยวนี้)", 18, 165, 250, 42, function()
+-- ปุ่ม Tween ไปหาคนขายปลา (บินไปหน้าร้านแล้วจอดอยู่ตรงนั้น)
+AutoActionButton(SellCard, "🚶  บินไปหาคนขายปลา (Tween to NPC)", 18, 200, 250, 42, function()
+    task.spawn(FlyToShopOnly)
+end)
+
+-- ปุ่มบินไปขายเดี๋ยวนี้แล้วบินกลับมาที่เดิม
+AutoActionButton(SellCard, "🚀  Tween & Sell Now (บินไปขายแล้วกลับ)", 280, 200, 250, 42, function()
     task.spawn(ExecuteTweenAndSell)
 end)
 
-AutoActionButton(SellCard, "🏪  Open Real Fish Shop GUI", 280, 165, 250, 42, function()
-    OpenRealFishShop()
-    if AutoStatusLabel then
-        AutoStatusLabel.Text = "สถานะ: เปิดหน้าต่างร้านค้าขายปลาของแท้แล้ว"
-    end
-end)
-
-AutoPage.CanvasSize = UDim2.fromOffset(0, 560)
+AutoPage.CanvasSize = UDim2.fromOffset(0, 570)
 
 -- ============================================================
 -- MAIN PAGE
