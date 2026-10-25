@@ -1,7 +1,8 @@
 --[[
     Moridiwaa - Player Control Panel (Client-Side Standalone Version)
     Features:
-    - 100% Max Distance Perfect Cast (Y = 12.00 Fixed Water Level)
+    - Dynamic Water Elevation Cast (Supports Y = 12, Y = 64 and ANY water height)
+    - 100% Max Distance Perfect Cast
     - Auto Fishing (Perfect Cast + Auto Hook Bite State + Frame-by-Frame Reel Lock)
     - Independent Auto Equip Rod (ID 6958 / Backpack Auto-Detect)
     - Tween Navigation & Selling:
@@ -465,7 +466,7 @@ local function NumberBox(parent, labelText, y, initial, minValue, maxValue, call
 end
 
 -- ============================================================
--- 100% MAX DISTANCE CAST & TWEEN SELL ENGINE
+-- DYNAMIC WATER LEVEL CAST & TWEEN SELL ENGINE
 -- ============================================================
 
 local function setHoldState(shouldHold, clickPos)
@@ -513,12 +514,10 @@ local function SmartEquipRod(equipState)
         return true, "ถือเบ็ดอยู่แล้ว"
     end
 
-    -- ยิงสวมใส่ ID 6958 จาก Log ที่ดักจับได้ตรงๆ
     if InventoryAction then
         pcall(function() InventoryAction:FireServer("Equip", ROD_ID) end)
     end
 
-    -- สวมใส่ Tool จาก Backpack เผื่อไว้
     if backpack and humanoid then
         for _, tool in ipairs(backpack:GetChildren()) do
             if tool:IsA("Tool") and (CollectionService:HasTag(tool, "FishingRod") or string.find(tool.Name:lower(), "rod")) then
@@ -542,11 +541,11 @@ local function getMinigameElements()
     return reel, water:FindFirstChild("Zone"), water:FindFirstChild("Fish")
 end
 
--- คำนวณพิกัดเหวี่ยงเบ็ดแบบเต็มหลอด 100% สายยาวที่สุด พร้อมล็อก Y = 12.00
+-- คำนวณพิกัดเหวี่ยงเบ็ดแบบเต็มหลอด พร้อมตรวจจับระดับความสูงผิวน้ำจริง (รองรับทั้ง Y=12, Y=64 และทุกระดับ)
 local function findMaxWaterTarget()
     local char = LP.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
-    if not hrp then return Vector3.new(-432.55, 12.00, -132.33) end
+    if not hrp then return Vector3.new(-676.27, 64.00, -370.41) end
 
     local forward = hrp.CFrame.LookVector
     local forwardDir = Vector3.new(forward.X, 0, forward.Z).Unit
@@ -559,17 +558,20 @@ local function findMaxWaterTarget()
     rayParams.FilterDescendantsInstances = {char}
     rayParams.IgnoreWater = false
 
-    -- สแกนหาระดับผิวน้ำที่ระยะไกลสุด
-    for dist = maxDistance, 15, -3 do
+    -- สแกนหาระดับผิวน้ำจริงจากระยะไกลสุดถอยกลับมาหาตัว (อิงตามฟังก์ชัน waterAt ของตัวเกมแท้ๆ)
+    for dist = maxDistance, 10, -2 do
         local checkPos = hrp.Position + (forwardDir * dist)
-        local hit = workspace:Raycast(checkPos + Vector3.new(0, 30, 0), Vector3.new(0, -60, 0), rayParams)
+        -- ยิง Raycast จากเหนือระดับตัวละคร +40 ลงล่าง -120 เพื่อดักจับผิวน้ำทุกระดับความสูง
+        local hit = workspace:Raycast(checkPos + Vector3.new(0, 40, 0), Vector3.new(0, -120, 0), rayParams)
         if hit and (hit.Material == Enum.Material.Water or hit.Instance == workspace.Terrain) then
-            return Vector3.new(hit.Position.X, 12.00, hit.Position.Z)
+            -- คืนค่าพิกัดจุดตกจริงพร้อมความสูง Y ของผิวน้ำนั้นๆ ทันที ไม่บังคับล็อกค่า
+            return hit.Position
         end
     end
 
+    -- กรณีหลุดระยะ Raycast ให้ใช้ความสูงระดับเดียวกับตัวละครเป็นตัวอ้างอิง
     local fallback = hrp.Position + (forwardDir * maxDistance)
-    return Vector3.new(fallback.X, 12.00, fallback.Z)
+    return Vector3.new(fallback.X, hrp.Position.Y - 2, fallback.Z)
 end
 
 -- ดึงข้อมูลปลาในกระเป๋า
@@ -795,10 +797,12 @@ task.spawn(function()
             else
                 local state = rod:GetAttribute("State") or "Idle"
 
-                -- 1. เหวี่ยงเต็มหลอด 100% สายยาวสุด (Y = 12.00)
+                -- 1. เหวี่ยงเต็มหลอด 100% สายยาวสุด (อิงระดับความสูงผิวน้ำจริง)
                 if state == "Idle" then
                     local maxWaterPos = findMaxWaterTarget()
-                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: เหวี่ยงเต็มหลอด 100% สายเบ็ดยาวสุด! ✨" end
+                    if AutoStatusLabel then 
+                        AutoStatusLabel.Text = string.format("สถานะ: เหวี่ยงเต็มหลอด! (พิกัด Y: %.1f) ✨", maxWaterPos.Y) 
+                    end
                     FishingAction:FireServer("Cast", maxWaterPos, true)
                     task.wait(0.8)
 
@@ -855,7 +859,7 @@ task.spawn(function()
 end)
 
 -- UI หน้าแท็บ Auto
-local AutoCard = Card(AutoPage, 20, 20, 570, 240, "Fishing Automation (Max Distance Cast)")
+local AutoCard = Card(AutoPage, 20, 20, 570, 240, "Fishing Automation (Dynamic Elevation Cast)")
 
 Toggle(AutoCard, "Auto Fishing (Cast + Hook + Lock Reel)", 55, false, function(v)
     AutoFishingEnabled = v
@@ -877,7 +881,7 @@ AutoStatusLabel = Instance.new("TextLabel")
 AutoStatusLabel.Position = UDim2.fromOffset(18, 175)
 AutoStatusLabel.Size = UDim2.new(1, -36, 0, 35)
 AutoStatusLabel.BackgroundTransparency = 1
-AutoStatusLabel.Text = "สถานะ: พร้อมทำงาน (Max Cast + Fixed Water 12.00)"
+AutoStatusLabel.Text = "สถานะ: พร้อมทำงาน (Auto Height Detection)"
 AutoStatusLabel.TextColor3 = Color3.fromRGB(150, 150, 155)
 AutoStatusLabel.Font = Enum.Font.Gotham
 AutoStatusLabel.TextSize = 12
@@ -932,12 +936,10 @@ local function AutoActionButton(parent, text, x, y, w, h, callback)
     return b
 end
 
--- ปุ่ม Tween ไปหาคนขายปลา (บินไปหน้าร้านแล้วจอดอยู่ตรงนั้น)
 AutoActionButton(SellCard, "🚶  บินไปหาคนขายปลา (Tween to NPC)", 18, 200, 250, 42, function()
     task.spawn(FlyToShopOnly)
 end)
 
--- ปุ่มบินไปขายเดี๋ยวนี้แล้วบินกลับมาที่เดิม
 AutoActionButton(SellCard, "🚀  Tween & Sell Now (บินไปขายแล้วกลับ)", 280, 200, 250, 42, function()
     task.spawn(ExecuteTweenAndSell)
 end)
