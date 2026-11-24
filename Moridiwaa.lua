@@ -1,15 +1,15 @@
 --[[
     Moridiwaa - Player Control Panel (Client-Side Standalone Version)
     Features:
-    - Dynamic Water Elevation Cast (Supports Y = 12, Y = 64 and ANY water height)
-    - 100% Max Distance Perfect Cast
-    - Auto Fishing (Perfect Cast + Auto Hook Bite State + Frame-by-Frame Reel Lock)
-    - Independent Auto Equip Rod (ID 6958 / Backpack Auto-Detect)
-    - Tween Navigation & Selling:
-        * Tween to Fish Shop NPC (Button: Fly to NPC and stay there)
-        * Instant Auto Sell Toggle (Fly to NPC -> Sell All -> Return to original spot)
-        * Bag Full 500/500 Auto Sell Trigger
-    - Full ESP, Movement, Aimbot, Server Hop
+- Dynamic Water Elevation Cast (Supports Y = 12, Y = 64 and ANY water height)
+- 100% Max Distance Perfect Cast
+- Auto Fishing (Perfect Cast + Auto Hook Bite State + Updated Panel.Lane Reel Lock)
+- Independent Auto Equip Rod (ID 6958 / Backpack Auto-Detect)
+- Tween Navigation & Selling:
+  - Tween to Fish Shop NPC (Button: Fly to NPC and stay there)
+  - Instant Auto Sell Toggle (Fly to NPC -> Sell All -> Return to original spot)
+  - Bag Full 1000/1000 Auto Sell Trigger
+- Full ESP, Movement, Aimbot, Server Hop
 ]]
 
 local Players = game:GetService("Players")
@@ -27,6 +27,11 @@ local LP = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 local MAX_PLAYERS = 50
 local STUDS_TO_METERS = 1
+
+-- ลบ UI เก่าออกก่อนรันใหม่
+if LP:FindFirstChild("PlayerGui") and LP.PlayerGui:FindFirstChild("Moridiwaa") then
+    LP.PlayerGui.Moridiwaa:Destroy()
+end
 
 -- Theme / Accent Color System
 local AccentColor = Color3.fromRGB(80, 140, 240)
@@ -531,17 +536,35 @@ local function SmartEquipRod(equipState)
     return true, "สวมใส่เบ็ดเรียบร้อย"
 end
 
+-- รองรับทั้งโครงสร้างมินิเกมใหม่ (FishingHud.Reel.Panel.Lane.Zone & LaneTop.Fish) และโครงสร้างเดิม
 local function getMinigameElements()
     local hud = LP.PlayerGui:FindFirstChild("FishingHud")
     if not hud then return nil end
     local reel = hud:FindFirstChild("Reel")
     if not reel or not reel.Visible then return nil end
+
+    -- พาธใหม่ตามอัปเดตเกม: Reel.Panel.Lane.Zone และ Reel.Panel.LaneTop.Fish
+    local panel = reel:FindFirstChild("Panel")
+    if panel then
+        local lane = panel:FindFirstChild("Lane")
+        local laneTop = panel:FindFirstChild("LaneTop")
+        local zone = lane and lane:FindFirstChild("Zone")
+        local fish = laneTop and laneTop:FindFirstChild("Fish")
+        if zone and fish then
+            return reel, zone, fish
+        end
+    end
+
+    -- Fallback เผื่อบางโซนยังใช้โครงสร้าง Water
     local water = reel:FindFirstChild("Water")
-    if not water then return nil end
-    return reel, water:FindFirstChild("Zone"), water:FindFirstChild("Fish")
+    if water then
+        return reel, water:FindFirstChild("Zone"), water:FindFirstChild("Fish")
+    end
+
+    return nil
 end
 
--- คำนวณพิกัดเหวี่ยงเบ็ดแบบเต็มหลอด พร้อมตรวจจับระดับความสูงผิวน้ำจริง (รองรับทั้ง Y=12, Y=64 และทุกระดับ)
+-- คำนวณพิกัดเหวี่ยงเบ็ดแบบเต็มหลอด พร้อมตรวจจับระดับความสูงผิวน้ำจริง
 local function findMaxWaterTarget()
     local char = LP.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -558,31 +581,52 @@ local function findMaxWaterTarget()
     rayParams.FilterDescendantsInstances = {char}
     rayParams.IgnoreWater = false
 
-    -- สแกนหาระดับผิวน้ำจริงจากระยะไกลสุดถอยกลับมาหาตัว (อิงตามฟังก์ชัน waterAt ของตัวเกมแท้ๆ)
     for dist = maxDistance, 10, -2 do
         local checkPos = hrp.Position + (forwardDir * dist)
-        -- ยิง Raycast จากเหนือระดับตัวละคร +40 ลงล่าง -120 เพื่อดักจับผิวน้ำทุกระดับความสูง
         local hit = workspace:Raycast(checkPos + Vector3.new(0, 40, 0), Vector3.new(0, -120, 0), rayParams)
         if hit and (hit.Material == Enum.Material.Water or hit.Instance == workspace.Terrain) then
-            -- คืนค่าพิกัดจุดตกจริงพร้อมความสูง Y ของผิวน้ำนั้นๆ ทันที ไม่บังคับล็อกค่า
             return hit.Position
         end
     end
 
-    -- กรณีหลุดระยะ Raycast ให้ใช้ความสูงระดับเดียวกับตัวละครเป็นตัวอ้างอิง
     local fallback = hrp.Position + (forwardDir * maxDistance)
     return Vector3.new(fallback.X, hrp.Position.Y - 2, fallback.Z)
 end
 
--- ดึงข้อมูลปลาในกระเป๋า
+-- อ่านตัวเลขความจุกระเป๋าจาก UI (InventoryMenu.Panel.TitleBar.FishSpace)
+local function getGuiFishSpace()
+    local invMenu = LP.PlayerGui:FindFirstChild("InventoryMenu")
+    if not invMenu then return nil, nil end
+
+    local titleBar = invMenu:FindFirstChild("Panel") and invMenu.Panel:FindFirstChild("TitleBar")
+    local fishSpace = titleBar and titleBar:FindFirstChild("FishSpace")
+    if fishSpace then
+        for _, obj in ipairs(fishSpace:GetDescendants()) do
+            if obj:IsA("TextLabel") then
+                local cur, maxCap = obj.Text:match("(%d+)%s*/%s*(%d+)")
+                if cur and maxCap then
+                    return tonumber(cur), tonumber(maxCap)
+                end
+            end
+        end
+    end
+    return nil, nil
+end
+
+-- ดึงข้อมูลปลาในกระเป๋า (อัปเดตเป็นเต็ม 1000)
 local function getInventoryFishData()
     local totalFish = 0
     local sellableIds = {}
-    local maxCapacity = 500
+    local maxCapacity = 1000
 
     local fConfig = getFishingConfig()
     if fConfig and fConfig.MaxFish then
         maxCapacity = fConfig.MaxFish
+    end
+
+    local guiCur, guiMax = getGuiFishSpace()
+    if guiMax and guiMax > 0 then
+        maxCapacity = guiMax
     end
 
     local invCtrl = getInventoryController()
@@ -606,6 +650,10 @@ local function getInventoryFishData()
                 end
             end
         end
+    end
+
+    if guiCur and guiCur > totalFish then
+        totalFish = guiCur
     end
 
     return totalFish, maxCapacity, sellableIds
@@ -692,6 +740,7 @@ local BagCounterLabel = nil
 local function ExecuteTweenAndSell()
     if isTweening then return end
     isTweening = true
+    setHoldState(false)
 
     local char = LP.Character
     local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -747,14 +796,45 @@ local function FlyToShopOnly()
     isTweening = false
 end
 
--- ลูปการทำงาน Auto Fishing & Auto Sell
+-- ลูปเลื่อนแถบ Reel ตามตัวปลาแบบ Frame-by-Frame (RenderStepped)
+RunService.RenderStepped:Connect(function()
+    if not AutoFishingEnabled or isTweening then
+        if isHoldingInput then setHoldState(false) end
+        return
+    end
+
+    local reel, zone, fish = getMinigameElements()
+    if reel and zone and fish and reel.Visible then
+        local centerPos = reel.AbsolutePosition + (reel.AbsoluteSize / 2)
+        local zoneW = zone.Size.X.Scale > 0 and zone.Size.X.Scale or 0.39
+        local zoneCenter = zone.Position.X.Scale + (zoneW / 2)
+        local fishPos = fish.Position.X.Scale
+
+        -- ช่วยขยับเฟรม Zone ติดตามตำแหน่งปลาให้ตรงช่องตลอดเวลา
+        local targetZoneX = math.clamp(fishPos - (zoneW / 2), 0, math.max(0, 1 - zoneW))
+        zone.Position = UDim2.new(targetZoneX, zone.Position.X.Offset, zone.Position.Y.Scale, zone.Position.Y.Offset)
+
+        -- กดค้าง/ปล่อยเมาส์ให้ตรงกับจังหวะของปลาบนแถบ
+        if fishPos > (zoneCenter - 0.01) then
+            setHoldState(true, centerPos)
+        else
+            setHoldState(false, centerPos)
+        end
+    else
+        if isHoldingInput then
+            setHoldState(false)
+        end
+    end
+end)
+
+-- ลูปการทำงาน Auto Fishing & Auto Sell (เต็ม 1000 ขาย)
 task.spawn(function()
     while true do
         pcall(function()
             if BagCounterLabel then
                 local currentFish, maxFish, sellableIds = getInventoryFishData()
                 BagCounterLabel.Text = string.format("🎒 จำนวนปลา: %d / %d ตัว (พร้อมขาย: %d)", currentFish, maxFish, #sellableIds)
-                if currentFish >= maxFish or currentFish >= 500 then
+                if currentFish >= maxFish or currentFish >= 1000 then
                     BagCounterLabel.TextColor3 = Color3.fromRGB(240, 70, 70)
                 else
                     BagCounterLabel.TextColor3 = Color3.fromRGB(150, 220, 160)
@@ -772,10 +852,10 @@ task.spawn(function()
         end
 
         if AutoFishingEnabled and not isTweening then
-            -- เช็คกระเป๋าเต็ม 500/500 แล้วบินไปขายอัตโนมัติ
+            -- เช็คกระเป๋าเต็ม 1000/1000 แล้วบินไปขายอัตโนมัติ
             if AutoSellEnabled then
                 local currentFish, maxFish, sellableIds = getInventoryFishData()
-                if (currentFish >= maxFish or currentFish >= 500) and #sellableIds > 0 then
+                if (currentFish >= maxFish or currentFish >= 1000) and #sellableIds > 0 then
                     ExecuteTweenAndSell()
                     task.wait(1.5)
                 end
@@ -796,9 +876,10 @@ task.spawn(function()
                 task.wait(0.5)
             else
                 local state = rod:GetAttribute("State") or "Idle"
+                local reel = getMinigameElements()
 
-                -- 1. เหวี่ยงเต็มหลอด 100% สายยาวสุด (อิงระดับความสูงผิวน้ำจริง)
-                if state == "Idle" then
+                -- 1. เหวี่ยงเต็มหลอด 100% สายยาวสุด
+                if state == "Idle" and not reel then
                     local maxWaterPos = findMaxWaterTarget()
                     if AutoStatusLabel then 
                         AutoStatusLabel.Text = string.format("สถานะ: เหวี่ยงเต็มหลอด! (พิกัด Y: %.1f) ✨", maxWaterPos.Y) 
@@ -806,7 +887,7 @@ task.spawn(function()
                     FishingAction:FireServer("Cast", maxWaterPos, true)
                     task.wait(0.8)
 
-                -- 2. รอปลากินเบ็ด (เช็ค State จริง)
+                -- 2. รอปลากินเบ็ด
                 elseif state == "Casting" or state == "Waiting" then
                     if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: เพอร์เฟกต์เต็มหลอด! รอปลากินเบ็ด..." end
                     local waitStart = tick()
@@ -822,31 +903,15 @@ task.spawn(function()
                     FishingAction:FireServer("Hook")
                     task.wait(0.2)
 
-                -- 4. ล็อกเป้าแถบเขียวตามตัวปลา (Lock-On Reel)
-                elseif state == "Reeling" then
-                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: ล็อกเป้าแถบเขียวตามตัวปลา 🎯" end
-                    while AutoFishingEnabled and not isTweening and rod and rod:GetAttribute("State") == "Reeling" do
-                        local reel, zone, fish = getMinigameElements()
-                        if reel and zone and fish and reel.Visible then
-                            local centerPos = reel.AbsolutePosition + (reel.AbsoluteSize / 2)
-                            local zoneCenter = zone.Position.X.Scale + (zone.Size.X.Scale / 2)
-                            local fishPos = fish.Position.X.Scale
-
-                            if fishPos > (zoneCenter + 0.015) then
-                                setHoldState(true, centerPos)
-                            elseif fishPos < (zoneCenter - 0.015) then
-                                setHoldState(false, centerPos)
-                            end
-                        end
-                        RunService.RenderStepped:Wait()
-                    end
-                    setHoldState(false)
-                    task.wait(0.4)
+                -- 4. ล็อกเป้าแถบตามตัวปลา (ทำงานควบคู่กับ RenderStepped ด้านบน)
+                elseif state == "Reeling" or reel then
+                    if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: กำลังเลื่อนแถบตามตัวปลา 🎯" end
+                    task.wait(0.1)
 
                 -- 5. ตกสำเร็จ รอเริ่มรอบใหม่
                 elseif state == "Caught" then
                     if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: ได้ปลาสำเร็จ! กำลังเริ่มรอบถัดไป..." end
-                    task.wait(2.0)
+                    task.wait(1.5)
                 else
                     task.wait(0.15)
                 end
@@ -891,7 +956,7 @@ AutoStatusLabel.Parent = AutoCard
 -- การ์ดระบบขายปลาแบบ Tween (Tween Auto Sell & Navigation)
 local SellCard = Card(AutoPage, 20, 280, 570, 260, "Tween Auto Sell & Navigation")
 
-Toggle(SellCard, "Auto Sell When Bag Full (เต็ม 500 บินไปขายแล้วกลับ)", 45, false, function(v)
+Toggle(SellCard, "Auto Sell When Bag Full (เต็ม 1000 บินไปขายแล้วกลับ)", 45, false, function(v)
     AutoSellEnabled = v
 end)
 
