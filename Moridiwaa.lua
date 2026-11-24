@@ -3,12 +3,12 @@
     Features:
 - Dynamic Water Elevation Cast (Supports Y = 12, Y = 64 and ANY water height)
 - 100% Max Distance Perfect Cast
-- Auto Fishing (Perfect Cast + Auto Hook Bite State + Updated Panel.Lane Reel Lock)
-- Independent Auto Equip Rod (ID 6958 / Backpack Auto-Detect)
+- Auto Fishing (Perfect Cast + Auto Hook Bite State + Panel.Lane Reel Lock)
+- Smart Auto Equip Best Rod (Auto-Scans Highest Tier Rod in Inventory or Slot 1)
 - Tween Navigation & Selling:
   - Tween to Fish Shop NPC (Button: Fly to NPC and stay there)
   - Instant Auto Sell Toggle (Fly to NPC -> Sell All -> Return to original spot)
-  - Bag Full 1000/1000 Auto Sell Trigger
+  - Bag Full 1000/1000 Auto Sell Trigger (Displays x / 1000)
 - Full ESP, Movement, Aimbot, Server Hop
 ]]
 
@@ -68,7 +68,6 @@ local AutoFishingEnabled = false
 local AutoEquipEnabled = false
 local AutoSellEnabled = false
 local InstantSellActive = false
-local ROD_ID = 6958
 local TweenSpeed = 45
 local isTweening = false
 local isHoldingInput = false
@@ -386,7 +385,7 @@ end
 local function Toggle(parent, text, y, default, callback)
     local label = Instance.new("TextLabel")
     label.Position = UDim2.fromOffset(18,y)
-    label.Size = UDim2.fromOffset(230,35)
+    label.Size = UDim2.fromOffset(260,35)
     label.BackgroundTransparency = 1
     label.Text = text
     label.TextColor3 = Color3.fromRGB(150,150,155)
@@ -432,7 +431,7 @@ end
 local function NumberBox(parent, labelText, y, initial, minValue, maxValue, callback)
     local label = Instance.new("TextLabel")
     label.Position = UDim2.fromOffset(18,y)
-    label.Size = UDim2.fromOffset(220,30)
+    label.Size = UDim2.fromOffset(240,30)
     label.BackgroundTransparency = 1
     label.Text = labelText
     label.TextColor3 = Color3.fromRGB(150,150,155)
@@ -471,7 +470,7 @@ local function NumberBox(parent, labelText, y, initial, minValue, maxValue, call
 end
 
 -- ============================================================
--- DYNAMIC WATER LEVEL CAST & TWEEN SELL ENGINE
+-- SMART ROD RANKING & DYNAMIC WATER CAST ENGINE
 -- ============================================================
 
 local function setHoldState(shouldHold, clickPos)
@@ -488,6 +487,111 @@ local function setHoldState(shouldHold, clickPos)
     end
 end
 
+-- ระดับความโหดของเบ็ดแต่ละชนิด (สูง = โหดสุด)
+local ROD_TIER_SCORES = {
+    ["robuxrod"]     = 1000,
+    ["hamsarod"]     = 900,
+    ["foxrod"]       = 800,
+    ["halloweenrod"] = 750,
+    ["dragonrod"]    = 700,
+    ["crystalrod"]   = 600,
+    ["goldenrod"]    = 500,
+    ["carbonrod"]    = 400,
+    ["bamboorod"]    = 200,
+}
+
+local function evaluateRodPower(rodKey)
+    local keyStr = tostring(rodKey or "")
+    local lowerKey = keyStr:lower():gsub("%s+", "")
+    local score = 0
+
+    -- 1. ลองอ่านค่าพลังจริงจาก FishingConfig ถ้ามี
+    local fConfig = getFishingConfig()
+    if fConfig and fConfig.Rods then
+        local rodData = fConfig.Rods[keyStr] or fConfig.Rods[lowerKey]
+        if type(rodData) == "table" then
+            score = score + (tonumber(rodData.Luck) or 0) * 10
+            score = score + (tonumber(rodData.Control) or 0) * 10
+            score = score + (tonumber(rodData.LureSpeed) or 0) * 10
+            score = score + (tonumber(rodData.ReelSpeed) or 0) * 10
+            score = score + (tonumber(rodData.Tier) or 0) * 100
+        end
+    end
+
+    -- 2. เทียบตารางระดับเบ็ดของเกม
+    for namePattern, tierVal in pairs(ROD_TIER_SCORES) do
+        if string.find(lowerKey, namePattern) then
+            score = math.max(score, tierVal)
+            break
+        end
+    end
+
+    if score == 0 and string.find(lowerKey, "rod") then
+        score = 100
+    end
+
+    return score
+end
+
+-- สแกนหาเบ็ดที่โหดที่สุดในตัว (เช็กทั้งจาก InventoryController, Backpack และช่องที่ 1)
+local function findBestRodInInventory()
+    local bestItem = nil
+    local bestScore = -1
+    local bestName = nil
+
+    -- 1. เช็กจาก InventoryController (ข้อมูลไอเทมทั้งหมดในตัว)
+    local invCtrl = getInventoryController()
+    if invCtrl then
+        local snapshot = invCtrl:GetSnapshot()
+        local items = snapshot and snapshot.Items
+        if items then
+            for _, item in pairs(items) do
+                local key = tostring(item.Key or item.Name or "")
+                if string.find(key:lower(), "rod") then
+                    local sc = evaluateRodPower(key)
+                    if sc > bestScore then
+                        bestScore = sc
+                        bestItem = item
+                        bestName = key
+                    end
+                end
+            end
+        end
+    end
+
+    -- 2. เช็กจาก Backpack และตัวละครเผื่อกรณีเบ็ดอยู่ในช่องกระเป๋าด่วน
+    local bestTool = nil
+    local bestToolScore = -1
+    local char = LP.Character
+    local bp = LP:FindFirstChild("Backpack")
+
+    local containers = {}
+    if char then table.insert(containers, char) end
+    if bp then table.insert(containers, bp) end
+
+    for _, container in ipairs(containers) do
+        for _, tool in ipairs(container:GetChildren()) do
+            if tool:IsA("Tool") and (CollectionService:HasTag(tool, "FishingRod") or string.find(tool.Name:lower(), "rod")) then
+                local sc = evaluateRodPower(tool.Name)
+                if sc > bestToolScore then
+                    bestToolScore = sc
+                    bestTool = tool
+                end
+            end
+        end
+    end
+
+    -- 3. Fallback: ถ้าไม่มีคะแนนชัดเจน ให้เช็กเบ็ดในช่องที่ 1 (Hotbar Slot 1 / เครื่องมือชิ้นแรก)
+    if not bestTool and bp then
+        local firstTool = bp:GetChildren()[1]
+        if firstTool and firstTool:IsA("Tool") then
+            bestTool = firstTool
+        end
+    end
+
+    return bestItem, bestTool, bestName or (bestTool and bestTool.Name)
+end
+
 -- ตรวจหาเบ็ดในมือ
 local function getEquippedRod()
     local char = LP.Character
@@ -501,11 +605,10 @@ local function getEquippedRod()
     return nil
 end
 
--- สวมใส่เบ็ด ID 6958 หรือสลับเก็บเข้ากระเป๋า
+-- สวมใส่เบ็ดที่โหดที่สุดอัตโนมัติ (หรือเบ็ดในช่อง 1)
 local function SmartEquipRod(equipState)
     local char = LP.Character
     local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-    local backpack = LP:FindFirstChild("Backpack")
 
     if not equipState then
         if humanoid then humanoid:UnequipTools() end
@@ -515,25 +618,37 @@ local function SmartEquipRod(equipState)
         return true, "เก็บเบ็ดเรียบร้อย"
     end
 
-    if getEquippedRod() then
-        return true, "ถือเบ็ดอยู่แล้ว"
+    local bestItem, bestTool, bestName = findBestRodInInventory()
+    local currentRod = getEquippedRod()
+
+    -- ถ้าถือเบ็ดที่โหดที่สุดอยู่แล้ว ไม่ต้องสลับซ้ำ
+    if currentRod and bestName and string.find(currentRod.Name:lower(), bestName:lower()) then
+        return true, "ถือเบ็ดโหดสุดอยู่แล้ว: " .. currentRod.Name
     end
 
-    if InventoryAction then
-        pcall(function() InventoryAction:FireServer("Equip", ROD_ID) end)
+    -- สั่ง Equip ผ่าน Remote ของเกมด้วย ID ของเบ็ดที่โหดที่สุด
+    if bestItem and bestItem.Id and InventoryAction then
+        pcall(function() InventoryAction:FireServer("Equip", bestItem.Id) end)
+        task.wait(0.2)
     end
 
-    if backpack and humanoid then
-        for _, tool in ipairs(backpack:GetChildren()) do
-            if tool:IsA("Tool") and (CollectionService:HasTag(tool, "FishingRod") or string.find(tool.Name:lower(), "rod")) then
-                humanoid:EquipTool(tool)
-                task.wait(0.2)
-                break
-            end
+    -- สวมใส่ Tool เข้ามือ (ถ้ายังไม่เข้ามือจาก Remote)
+    if not getEquippedRod() then
+        _, bestTool = findBestRodInInventory()
+        if bestTool and humanoid then
+            humanoid:EquipTool(bestTool)
+            task.wait(0.2)
         end
     end
 
-    return true, "สวมใส่เบ็ดเรียบร้อย"
+    local equipped = getEquippedRod()
+    if equipped then
+        return true, "ถือเบ็ดโหดสุด: " .. equipped.Name
+    elseif bestName then
+        return true, "เลือกเบ็ด: " .. tostring(bestName)
+    else
+        return false, "ไม่พบเบ็ดในตัวหรือช่อง 1"
+    end
 end
 
 -- รองรับทั้งโครงสร้างมินิเกมใหม่ (FishingHud.Reel.Panel.Lane.Zone & LaneTop.Fish) และโครงสร้างเดิม
@@ -543,7 +658,6 @@ local function getMinigameElements()
     local reel = hud:FindFirstChild("Reel")
     if not reel or not reel.Visible then return nil end
 
-    -- พาธใหม่ตามอัปเดตเกม: Reel.Panel.Lane.Zone และ Reel.Panel.LaneTop.Fish
     local panel = reel:FindFirstChild("Panel")
     if panel then
         local lane = panel:FindFirstChild("Lane")
@@ -555,7 +669,6 @@ local function getMinigameElements()
         end
     end
 
-    -- Fallback เผื่อบางโซนยังใช้โครงสร้าง Water
     local water = reel:FindFirstChild("Water")
     if water then
         return reel, water:FindFirstChild("Zone"), water:FindFirstChild("Fish")
@@ -613,22 +726,18 @@ local function getGuiFishSpace()
     return nil, nil
 end
 
--- ดึงข้อมูลปลาในกระเป๋า (อัปเดตเป็นเต็ม 1000)
+-- ดึงข้อมูลปลาในกระเป๋า (เต็ม 1000)
 local function getInventoryFishData()
     local totalFish = 0
     local sellableIds = {}
     local maxCapacity = 1000
 
-    local fConfig = getFishingConfig()
-    if fConfig and fConfig.MaxFish then
-        maxCapacity = fConfig.MaxFish
-    end
-
     local guiCur, guiMax = getGuiFishSpace()
-    if guiMax and guiMax > 0 then
+    if guiMax and guiMax >= 1000 then
         maxCapacity = guiMax
     end
 
+    local fConfig = getFishingConfig()
     local invCtrl = getInventoryController()
     if invCtrl then
         local snapshot = invCtrl:GetSnapshot()
@@ -810,7 +919,7 @@ RunService.RenderStepped:Connect(function()
         local zoneCenter = zone.Position.X.Scale + (zoneW / 2)
         local fishPos = fish.Position.X.Scale
 
-        -- ช่วยขยับเฟรม Zone ติดตามตำแหน่งปลาให้ตรงช่องตลอดเวลา
+        -- ขยับเฟรม Zone ติดตามตำแหน่งปลาให้ตรงช่องตลอดเวลา
         local targetZoneX = math.clamp(fishPos - (zoneW / 2), 0, math.max(0, 1 - zoneW))
         zone.Position = UDim2.new(targetZoneX, zone.Position.X.Offset, zone.Position.Y.Scale, zone.Position.Y.Offset)
 
@@ -833,8 +942,9 @@ task.spawn(function()
         pcall(function()
             if BagCounterLabel then
                 local currentFish, maxFish, sellableIds = getInventoryFishData()
-                BagCounterLabel.Text = string.format("🎒 จำนวนปลา: %d / %d ตัว (พร้อมขาย: %d)", currentFish, maxFish, #sellableIds)
-                if currentFish >= maxFish or currentFish >= 1000 then
+                -- แสดงจำนวนปลาพร้อมขายเป็น x / 1000 ตามที่กำหนด
+                BagCounterLabel.Text = string.format("🎒 ปลาพร้อมขาย: %d / 1000 (ในกระเป๋า: %d/%d)", #sellableIds, currentFish, maxFish)
+                if #sellableIds >= 1000 or currentFish >= 1000 then
                     BagCounterLabel.TextColor3 = Color3.fromRGB(240, 70, 70)
                 else
                     BagCounterLabel.TextColor3 = Color3.fromRGB(150, 220, 160)
@@ -855,23 +965,26 @@ task.spawn(function()
             -- เช็คกระเป๋าเต็ม 1000/1000 แล้วบินไปขายอัตโนมัติ
             if AutoSellEnabled then
                 local currentFish, maxFish, sellableIds = getInventoryFishData()
-                if (currentFish >= maxFish or currentFish >= 1000) and #sellableIds > 0 then
+                if (#sellableIds >= 1000 or currentFish >= 1000) and #sellableIds > 0 then
                     ExecuteTweenAndSell()
                     task.wait(1.5)
                 end
             end
 
-            -- เช็คการถือเบ็ด
+            -- เช็คการถือเบ็ดที่โหดที่สุดในตัว (หรือช่อง 1)
             local rod = getEquippedRod()
-            if not rod and AutoEquipEnabled then
-                SmartEquipRod(true)
-                task.wait(0.4)
-                rod = getEquippedRod()
+            if AutoEquipEnabled then
+                local _, _, bestName = findBestRodInInventory()
+                if not rod or (bestName and not string.find(rod.Name:lower(), bestName:lower())) then
+                    SmartEquipRod(true)
+                    task.wait(0.35)
+                    rod = getEquippedRod()
+                end
             end
 
             if not rod then
                 if AutoStatusLabel and not isTweening then
-                    AutoStatusLabel.Text = "สถานะ: รอถือเบ็ด (เปิด Auto Equip หรือถือเบ็ดเอง)..."
+                    AutoStatusLabel.Text = "สถานะ: รอถือเบ็ด (เปิด Auto Equip Best Rod หรือถือเบ็ดเอง)..."
                 end
                 task.wait(0.5)
             else
@@ -882,7 +995,7 @@ task.spawn(function()
                 if state == "Idle" and not reel then
                     local maxWaterPos = findMaxWaterTarget()
                     if AutoStatusLabel then 
-                        AutoStatusLabel.Text = string.format("สถานะ: เหวี่ยงเต็มหลอด! (พิกัด Y: %.1f) ✨", maxWaterPos.Y) 
+                        AutoStatusLabel.Text = string.format("สถานะ: เหวี่ยงเบ็ด [%s] เต็มหลอด! (Y: %.1f)", rod.Name, maxWaterPos.Y) 
                     end
                     FishingAction:FireServer("Cast", maxWaterPos, true)
                     task.wait(0.8)
@@ -903,7 +1016,7 @@ task.spawn(function()
                     FishingAction:FireServer("Hook")
                     task.wait(0.2)
 
-                -- 4. ล็อกเป้าแถบตามตัวปลา (ทำงานควบคู่กับ RenderStepped ด้านบน)
+                -- 4. ล็อกเป้าแถบตามตัวปลา
                 elseif state == "Reeling" or reel then
                     if AutoStatusLabel then AutoStatusLabel.Text = "สถานะ: กำลังเลื่อนแถบตามตัวปลา 🎯" end
                     task.wait(0.1)
@@ -934,7 +1047,7 @@ Toggle(AutoCard, "Auto Fishing (Cast + Hook + Lock Reel)", 55, false, function(v
     end
 end)
 
-Toggle(AutoCard, "Auto Equip Rod (ถือเบ็ดอัตโนมัติ ID 6958)", 105, false, function(v)
+Toggle(AutoCard, "Auto Equip Best Rod (ถือเบ็ดโหดสุดในตัว / ช่อง 1)", 105, false, function(v)
     AutoEquipEnabled = v
     local success, msg = SmartEquipRod(v)
     if AutoStatusLabel then
@@ -946,7 +1059,7 @@ AutoStatusLabel = Instance.new("TextLabel")
 AutoStatusLabel.Position = UDim2.fromOffset(18, 175)
 AutoStatusLabel.Size = UDim2.new(1, -36, 0, 35)
 AutoStatusLabel.BackgroundTransparency = 1
-AutoStatusLabel.Text = "สถานะ: พร้อมทำงาน (Auto Height Detection)"
+AutoStatusLabel.Text = "สถานะ: พร้อมทำงาน (Auto Best Rod & Height Detection)"
 AutoStatusLabel.TextColor3 = Color3.fromRGB(150, 150, 155)
 AutoStatusLabel.Font = Enum.Font.Gotham
 AutoStatusLabel.TextSize = 12
@@ -975,7 +1088,7 @@ BagCounterLabel = Instance.new("TextLabel")
 BagCounterLabel.Position = UDim2.fromOffset(18, 168)
 BagCounterLabel.Size = UDim2.new(1, -36, 0, 20)
 BagCounterLabel.BackgroundTransparency = 1
-BagCounterLabel.Text = "🎒 จำนวนปลา: กำลังตรวจสอบ..."
+BagCounterLabel.Text = "🎒 ปลาพร้อมขาย: 0 / 1000"
 BagCounterLabel.TextColor3 = Color3.fromRGB(150, 220, 160)
 BagCounterLabel.Font = Enum.Font.GothamBold
 BagCounterLabel.TextSize = 13
